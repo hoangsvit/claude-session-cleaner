@@ -1,6 +1,6 @@
 {
   "name": "claude-session-cleaner",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Safely inspect and delete selected Claude Code project session history from an interactive cross-platform CLI.",
   "type": "commonjs",
   "bin": {
