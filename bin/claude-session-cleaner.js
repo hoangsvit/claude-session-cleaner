@@ -2,10 +2,10 @@
 
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
-const readline = require("readline");
+const fs = require("node:fs/promises");
+const path = require("node:path");
+const os = require("node:os");
+const readline = require("node:readline");
 
 const pkg = require("../package.json");
 
@@ -40,16 +40,16 @@ Safety:
 `);
 }
 
-function getArgValue(name) {
-  const index = process.argv.indexOf(name);
-  if (index >= 0 && process.argv[index + 1]) {
-    return process.argv[index + 1];
+function getArgValue(args, name) {
+  const index = args.indexOf(name);
+  if (index >= 0 && args[index + 1]) {
+    return args[index + 1];
   }
   return "";
 }
 
-function resolveClaudeDir() {
-  const fromArg = getArgValue("--claude-dir");
+function resolveClaudeDir(args = process.argv.slice(2)) {
+  const fromArg = getArgValue(args, "--claude-dir");
 
   if (fromArg && fromArg.trim()) {
     return path.resolve(fromArg);
@@ -69,60 +69,100 @@ function formatSize(bytes) {
   return `${bytes} B`;
 }
 
-function getDirectorySize(dir) {
-  let total = 0;
+async function mapLimit(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
 
-  function walk(current) {
-    let entries = [];
-
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      const fullPath = path.join(current, entry.name);
-
-      try {
-        if (entry.isDirectory()) {
-          walk(fullPath);
-        } else if (entry.isFile()) {
-          total += fs.statSync(fullPath).size;
-        }
-      } catch {
-        // Ignore permission or broken file errors.
-      }
+  async function run() {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await worker(items[index], index);
     }
   }
 
-  walk(dir);
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(Array.from({ length: workerCount }, run));
+  return results;
+}
+
+async function getDirectorySize(rootDir) {
+  let total = 0;
+  let directories = [rootDir];
+
+  while (directories.length) {
+    const directoryEntries = await mapLimit(directories, 16, async (directory) => {
+      try {
+        return {
+          directory,
+          entries: await fs.readdir(directory, { withFileTypes: true }),
+        };
+      } catch {
+        return { directory, entries: [] };
+      }
+    });
+
+    const nextDirectories = [];
+    const files = [];
+
+    for (const { directory, entries } of directoryEntries) {
+      for (const entry of entries) {
+        const fullPath = path.join(directory, entry.name);
+
+        if (entry.isDirectory()) {
+          nextDirectories.push(fullPath);
+        } else if (entry.isFile()) {
+          files.push(fullPath);
+        }
+      }
+    }
+
+    const sizes = await mapLimit(files, 32, async (file) => {
+      try {
+        return (await fs.stat(file)).size;
+      } catch {
+        return 0;
+      }
+    });
+
+    total += sizes.reduce((sum, size) => sum + size, 0);
+    directories = nextDirectories;
+  }
+
   return total;
 }
 
-function getProjectSessions(projectsDir) {
-  let entries = [];
+async function getProjectSessions(projectsDir) {
+  let entries;
 
   try {
-    entries = fs.readdirSync(projectsDir, { withFileTypes: true });
+    entries = await fs.readdir(projectsDir, { withFileTypes: true });
   } catch {
     return [];
   }
 
-  const sessions = entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => {
+  const directories = entries.filter((entry) => entry.isDirectory());
+  const sessions = (
+    await mapLimit(directories, 4, async (entry) => {
       const fullPath = path.join(projectsDir, entry.name);
-      const stats = fs.statSync(fullPath);
-      const sizeBytes = getDirectorySize(fullPath);
 
-      return {
-        name: entry.name,
-        path: fullPath,
-        lastWrite: stats.mtime,
-        sizeBytes,
-      };
+      try {
+        const [stats, sizeBytes] = await Promise.all([
+          fs.stat(fullPath),
+          getDirectorySize(fullPath),
+        ]);
+
+        return {
+          name: entry.name,
+          path: fullPath,
+          lastWrite: stats.mtime,
+          sizeBytes,
+        };
+      } catch {
+        return null;
+      }
     })
+  )
+    .filter(Boolean)
     .sort((a, b) => b.lastWrite - a.lastWrite);
 
   return sessions.map((session, index) => ({
@@ -189,25 +229,41 @@ function ask(readlineInterface, question) {
   });
 }
 
-function removeDirectory(targetPath) {
-  fs.rmSync(targetPath, {
+function isDirectChild(parentPath, targetPath) {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(targetPath));
+  return (
+    relative !== "" &&
+    !relative.startsWith("..") &&
+    !path.isAbsolute(relative) &&
+    !relative.includes(path.sep)
+  );
+}
+
+async function removeDirectory(projectsDir, targetPath) {
+  if (!isDirectChild(projectsDir, targetPath)) {
+    throw new Error("Refusing to delete a path outside the Claude projects directory.");
+  }
+
+  await fs.rm(targetPath, {
     recursive: true,
     force: true,
   });
 }
 
 async function main() {
-  if (process.argv.includes("-h") || process.argv.includes("--help")) {
+  const args = process.argv.slice(2);
+
+  if (args.includes("-h") || args.includes("--help")) {
     printHelp();
     return;
   }
 
-  if (process.argv.includes("-v") || process.argv.includes("--version")) {
+  if (args.includes("-v") || args.includes("--version")) {
     console.log(pkg.version);
     return;
   }
 
-  const claudeDir = resolveClaudeDir();
+  const claudeDir = resolveClaudeDir(args);
   const projectsDir = path.join(claudeDir, "projects");
 
   console.clear();
@@ -217,13 +273,17 @@ async function main() {
   console.log(`Projects dir: ${projectsDir}`);
   console.log("");
 
-  if (!fs.existsSync(claudeDir)) {
+  try {
+    await fs.access(claudeDir);
+  } catch {
     console.error(`Cannot find Claude directory: ${claudeDir}`);
     process.exitCode = 1;
     return;
   }
 
-  if (!fs.existsSync(projectsDir)) {
+  try {
+    await fs.access(projectsDir);
+  } catch {
     console.error(`Cannot find Claude projects directory: ${projectsDir}`);
     process.exitCode = 1;
     return;
@@ -236,7 +296,7 @@ async function main() {
 
   try {
     while (true) {
-      const items = getProjectSessions(projectsDir);
+      const items = await getProjectSessions(projectsDir);
 
       if (!items.length) {
         console.log("No Claude project sessions found.");
@@ -304,13 +364,8 @@ async function main() {
 
       for (const item of selectedItems) {
         try {
-          removeDirectory(item.path);
-
-          if (fs.existsSync(item.path)) {
-            console.log(`Failed to delete: ${item.name}`);
-          } else {
-            console.log(`Deleted: ${item.name}`);
-          }
+          await removeDirectory(projectsDir, item.path);
+          console.log(`Deleted: ${item.name}`);
         } catch (error) {
           console.log(`Failed to delete: ${item.name}`);
           console.log(`Reason: ${error.message}`);
@@ -331,7 +386,17 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  getDirectorySize,
+  isDirectChild,
+  mapLimit,
+  parseSelection,
+  resolveClaudeDir,
+};
