@@ -1,0 +1,45 @@
+{
+  "name": "claude-session-cleaner",
+  "version": "1.0.0",
+  "description": "Interactive cross-platform CLI to safely delete selected Claude Code project session logs.",
+  "type": "commonjs",
+  "bin": {
+    "claude-session-cleaner": "./bin/claude-session-cleaner.js"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node ./bin/claude-session-cleaner.js",
+    "test": "node ./bin/claude-session-cleaner.js --version",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "cleaner",
+    "logs",
+    "session",
+    "history",
+    "cli",
+    "cross-platform"
+  ],
+  "author": "David",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mic1/claude-session-cleaner.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mic1/claude-session-cleaner/issues"
+  },
+  "homepage": "https://github.com/mic1/claude-session-cleaner#readme",
+  "publishConfig": {
+    "access": "public"
+  }
+}
