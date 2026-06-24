@@ -2,6 +2,8 @@
 
 Interactive cross-platform CLI to safely delete selected Claude Code project session logs.
 
+<img width="1125" height="621" alt="image" src="https://github.com/user-attachments/assets/89094ee1-2a41-4aec-b47e-a14425b57d4c" />
+
 ## Install / Run
 
 Run directly with npm:
