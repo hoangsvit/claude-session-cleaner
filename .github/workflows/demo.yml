@@ -77,26 +77,53 @@ jobs:
           path: demo/*.gif
           retention-days: 7
 
+      - name: Publish GIFs for inline PR preview
+        id: publish-gifs
+        if: github.event_name == 'pull_request'
+        run: |
+          {
+            echo 'help<<EOF'
+            vhs publish --markdown demo/help.gif
+            echo EOF
+            echo 'full<<EOF'
+            vhs publish --markdown demo/full.gif
+            echo EOF
+            echo 'cancel<<EOF'
+            vhs publish --markdown demo/cancel.gif
+            echo EOF
+            echo 'update<<EOF'
+            vhs publish --markdown demo/update.gif
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Comment demo GIF preview on PR
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v8
+        env:
+          HELP_GIF: ${{ steps.publish-gifs.outputs.help }}
+          FULL_GIF: ${{ steps.publish-gifs.outputs.full }}
+          CANCEL_GIF: ${{ steps.publish-gifs.outputs.cancel }}
+          UPDATE_GIF: ${{ steps.publish-gifs.outputs.update }}
         with:
           script: |
             const marker = '<!-- claude-cleaner-demo-gifs -->';
-            const artifactUrl = '${{ steps.upload-gifs.outputs.artifact-url }}';
             const body = [
               marker,
               '## Latest terminal demo GIFs',
               '',
-              'The newest generated terminal GIFs for this pull request are available in the workflow artifact:',
+              'The newest generated terminal GIFs for this pull request are shown below:',
               '',
-              `[Download demo-gifs artifact](${artifactUrl})`,
+              '### Help',
+              process.env.HELP_GIF,
               '',
-              'Artifact contains:',
-              '- `demo/help.gif`',
-              '- `demo/full.gif`',
-              '- `demo/cancel.gif`',
-              '- `demo/update.gif`',
+              '### Full cleanup flow',
+              process.env.FULL_GIF,
+              '',
+              '### Cancel flow',
+              process.env.CANCEL_GIF,
+              '',
+              '### Update flow',
+              process.env.UPDATE_GIF,
             ].join('\n');
 
             const { owner, repo } = context.repo;
