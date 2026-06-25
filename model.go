@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -83,30 +84,33 @@ type deleteDoneMsg struct {
 }
 
 type model struct {
-	state        appState
-	claudeDir    string
-	projectsDir  string
-	sessions     []Session
-	selected     map[int]bool
-	cursor       int
-	spinner      spinner.Model
-	confirmIdx   int // 0 = No (default), 1 = Yes
-	deleted      []string
-	failed       []string
-	width        int
+	state          appState
+	claudeDir      string
+	claudeJSONPath string
+	projectsDir    string
+	sessions       []Session
+	selected       map[int]bool
+	cursor         int
+	spinner        spinner.Model
+	confirmIdx     int  // 0 = No (default), 1 = Yes
+	purgeMode      bool // true = full purge via claude CLI, false = session files only
+	deleted        []string
+	failed         []string
+	width          int
 }
 
-func newModel(claudeDir, projectsDir string) model {
+func newModel(claudeDir, claudeJSONPath, projectsDir string) model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(clrPurple)
 
 	return model{
-		state:       stateLoading,
-		claudeDir:   claudeDir,
-		projectsDir: projectsDir,
-		selected:    make(map[int]bool),
-		spinner:     sp,
+		state:          stateLoading,
+		claudeDir:      claudeDir,
+		claudeJSONPath: claudeJSONPath,
+		projectsDir:    projectsDir,
+		selected:       make(map[int]bool),
+		spinner:        sp,
 	}
 }
 
@@ -114,7 +118,7 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		func() tea.Msg {
-			sessions, err := scanSessions(m.projectsDir)
+			sessions, err := scanSessions(m.claudeJSONPath, m.projectsDir)
 			return sessionsLoadedMsg{sessions, err}
 		},
 	)
@@ -149,6 +153,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.failed = msg.failed
 		m.state = stateDone
 		m.selected = make(map[int]bool)
+		m.purgeMode = false
 		return m, nil
 
 	case spinner.TickMsg:
@@ -198,7 +203,18 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "enter":
 		if m.state == stateDone {
-			return m, tea.Quit
+			m.state = stateLoading
+			m.deleted = nil
+			m.failed = nil
+			claudeJSONPath := m.claudeJSONPath
+			projectsDir := m.projectsDir
+			return m, tea.Batch(
+				m.spinner.Tick,
+				func() tea.Msg {
+					sessions, err := scanSessions(claudeJSONPath, projectsDir)
+					return sessionsLoadedMsg{sessions, err}
+				},
+			)
 		}
 		count := 0
 		for _, v := range m.selected {
@@ -207,6 +223,21 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if count > 0 {
+			m.purgeMode = false
+			m.state = stateConfirm
+			m.confirmIdx = 0
+			return m, nil
+		}
+
+	case "p", "P":
+		count := 0
+		for _, v := range m.selected {
+			if v {
+				count++
+			}
+		}
+		if count > 0 {
+			m.purgeMode = true
 			m.state = stateConfirm
 			m.confirmIdx = 0
 			return m, nil
@@ -221,6 +252,7 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "q", "n":
 		m.state = stateList
 		m.confirmIdx = 0
+		m.purgeMode = false
 		return m, nil
 
 	case "left", "h", "tab":
@@ -233,14 +265,21 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "y":
 		m.confirmIdx = 1
+		if m.purgeMode {
+			return m.doPurge()
+		}
 		return m.doDelete()
 
 	case "enter":
 		if m.confirmIdx == 1 {
+			if m.purgeMode {
+				return m.doPurge()
+			}
 			return m.doDelete()
 		}
 		m.state = stateList
 		m.confirmIdx = 0
+		m.purgeMode = false
 		return m, nil
 	}
 	return m, nil
@@ -257,6 +296,34 @@ func (m model) doDelete() (tea.Model, tea.Cmd) {
 					continue
 				}
 				if err := safeRemove(m.projectsDir, s.Path); err != nil {
+					failed = append(failed, s.Name)
+				} else {
+					deleted = append(deleted, s.Name)
+				}
+			}
+			return deleteDoneMsg{deleted, failed}
+		},
+	)
+}
+
+func (m model) doPurge() (tea.Model, tea.Cmd) {
+	m.state = stateDeleting
+	sessions := m.sessions
+	selected := m.selected
+	return m, tea.Batch(
+		m.spinner.Tick,
+		func() tea.Msg {
+			var deleted, failed []string
+			for _, s := range sessions {
+				if !selected[s.Index] {
+					continue
+				}
+				if s.ProjectPath == "" {
+					failed = append(failed, s.Name+" (path unknown)")
+					continue
+				}
+				cmd := exec.Command("claude", "project", "purge", "-y", s.ProjectPath)
+				if err := cmd.Run(); err != nil {
 					failed = append(failed, s.Name)
 				} else {
 					deleted = append(deleted, s.Name)
@@ -294,25 +361,27 @@ func (m model) viewList() string {
 	}
 
 	const (
-		nameW = 44
-		timeW = 14
-		sizeW = 10
+		nameW   = 36
+		timeW   = 12
+		tokensW = 10
+		sizeW   = 8
 	)
 
 	var sb strings.Builder
 	sb.WriteString("\n")
 
 	// Header row
-	sb.WriteString(dimStyle.Render(fmt.Sprintf("       %-*s  %-*s  %s",
+	sb.WriteString(dimStyle.Render(fmt.Sprintf("        %-*s  %-*s  %-*s  %s",
 		nameW, "Name",
 		timeW, "Last modified",
+		tokensW, "Tokens",
 		"Size",
 	)) + "\n")
-	sb.WriteString(dimStyle.Render("  "+strings.Repeat("─", nameW+timeW+sizeW+12)) + "\n")
+	sb.WriteString(dimStyle.Render("  "+strings.Repeat("─", nameW+timeW+tokensW+sizeW+18)) + "\n")
 
 	rowW := m.width
-	if rowW < 80 {
-		rowW = 80
+	if rowW < 82 {
+		rowW = 82
 	}
 
 	for _, s := range m.sessions {
@@ -343,11 +412,40 @@ func (m model) viewList() string {
 			check = lipgloss.NewStyle().Foreground(clrGreen).Background(bg).Bold(true).Render("[✓]")
 		}
 
-		name := lipgloss.NewStyle().Foreground(clrFg).Background(bg).Width(nameW).Render(truncate(s.Name, nameW))
-		t := lipgloss.NewStyle().Foreground(clrComment).Background(bg).Width(timeW).Render(humanTime(s.Modified))
-		sz := lipgloss.NewStyle().Foreground(clrCyan).Background(bg).Render(formatSize(s.Size))
+		// ● green = has session data  ○ dim = no local data (can still purge config)
+		var status string
+		if s.HasData {
+			status = lipgloss.NewStyle().Foreground(clrGreen).Background(bg).Render("●")
+		} else {
+			status = lipgloss.NewStyle().Foreground(clrComment).Background(bg).Render("○")
+		}
 
-		content := cur + check + "  " + name + "  " + t + "  " + sz
+		displayName := s.Name
+		if s.ProjectPath != "" {
+			displayName = s.ProjectPath
+		}
+
+		nameFg := clrFg
+		if !s.HasData {
+			nameFg = clrComment
+		}
+		name := lipgloss.NewStyle().Foreground(nameFg).Background(bg).Width(nameW).Render(truncate(displayName, nameW))
+
+		var timeStr, tokStr, szStr string
+		if s.HasData {
+			timeStr = humanTime(s.Modified)
+			tokStr = formatTokens(s.InputTokens + s.OutputTokens)
+			szStr = formatSize(s.Size)
+		} else {
+			timeStr = "—"
+			tokStr = "—"
+			szStr = "—"
+		}
+		t := lipgloss.NewStyle().Foreground(clrComment).Background(bg).Width(timeW).Render(timeStr)
+		tok := lipgloss.NewStyle().Foreground(clrPurple).Background(bg).Width(tokensW).Render(tokStr)
+		sz := lipgloss.NewStyle().Foreground(clrCyan).Background(bg).Render(szStr)
+
+		content := cur + check + " " + status + " " + name + "  " + t + "  " + tok + "  " + sz
 		sb.WriteString(rowStyle.Width(rowW).Render(content) + "\n")
 	}
 
@@ -359,7 +457,7 @@ func (m model) viewList() string {
 	}
 
 	footer := fmt.Sprintf(
-		"↑/↓ navigate  space toggle  a select all  enter confirm  q quit    %s selected",
+		"↑/↓ navigate  space toggle  a select all  enter delete  p full-purge  q quit    %s selected",
 		countStyle.Render(fmt.Sprintf("%d", selected)),
 	)
 	sb.WriteString(helpStyle.Render(footer))
@@ -370,40 +468,49 @@ func (m model) viewList() string {
 func (m model) viewConfirm() string {
 	var sb strings.Builder
 	sb.WriteString("\n")
-	sb.WriteString("  " + dangerStyle.Render("⚠  Will delete:") + "\n\n")
+	if m.purgeMode {
+		sb.WriteString("  " + dangerStyle.Render("⚠  Full purge — will delete ALL project data:") + "\n\n")
+	} else {
+		sb.WriteString("  " + dangerStyle.Render("⚠  Will delete session files:") + "\n\n")
+	}
 
-	var total int64
+	var totalSize, totalTokens int64
 	for _, s := range m.sessions {
 		if !m.selected[s.Index] {
 			continue
 		}
-		total += s.Size
-		sb.WriteString(fmt.Sprintf("    %s  %s  %s\n",
+		totalSize += s.Size
+		totalTokens += s.InputTokens + s.OutputTokens
+		displayName := s.Name
+		if s.ProjectPath != "" {
+			displayName = s.ProjectPath
+		}
+		sb.WriteString(fmt.Sprintf("    %s  %s  %s  %s\n",
 			checkOnStyle.Render("✓"),
-			nameStyle.Render(truncate(s.Name, 44)),
+			nameStyle.Render(truncate(displayName, 38)),
+			lipgloss.NewStyle().Foreground(clrPurple).Render(formatTokens(s.InputTokens+s.OutputTokens)+" tok"),
 			sizeStyle.Render(formatSize(s.Size)),
 		))
 	}
 
-	sb.WriteString(fmt.Sprintf("\n  Total: %s\n\n", sizeStyle.Render(formatSize(total))))
-	sb.WriteString("  " + dimStyle.Render("Deletes session history only. Source code is NOT affected.") + "\n\n")
-
-	noStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Padding(0, 3)
-	yesStyle := noStyle
-
-	if m.confirmIdx == 0 {
-		noStyle = noStyle.BorderForeground(clrPurple).Foreground(clrFg).Bold(true)
-		yesStyle = yesStyle.BorderForeground(clrComment).Foreground(clrComment)
+	sb.WriteString(fmt.Sprintf("\n  Total: %s  %s\n\n",
+		sizeStyle.Render(formatSize(totalSize)),
+		lipgloss.NewStyle().Foreground(clrPurple).Render(formatTokens(totalTokens)+" tokens"),
+	))
+	if m.purgeMode {
+		sb.WriteString("  " + dangerStyle.Render("Deletes transcripts, tasks, file history, and config. Cannot undo.") + "\n\n")
 	} else {
-		noStyle = noStyle.BorderForeground(clrComment).Foreground(clrComment)
-		yesStyle = yesStyle.BorderForeground(clrRed).Foreground(clrRed).Bold(true)
+		sb.WriteString("  " + dimStyle.Render("Deletes session history only. Source code is NOT affected.") + "\n\n")
 	}
 
-	btnNo := noStyle.Render("✗  No, cancel")
-	btnYes := yesStyle.Render("✓  Yes, delete")
-	sb.WriteString("  " + lipgloss.JoinHorizontal(lipgloss.Center, btnNo, "   ", btnYes) + "\n\n")
+	no := dimStyle.Render("[ N ]  No, cancel")
+	yes := dimStyle.Render("[ Y ]  Yes, delete")
+	if m.confirmIdx == 0 {
+		no = lipgloss.NewStyle().Foreground(clrFg).Bold(true).Render("[ N ]  No, cancel")
+	} else {
+		yes = lipgloss.NewStyle().Foreground(clrRed).Bold(true).Render("[ Y ]  Yes, delete")
+	}
+	sb.WriteString("  " + no + "      " + yes + "\n\n")
 	sb.WriteString("  " + dimStyle.Render("←/→ select  enter confirm  esc back"))
 
 	return sb.String()
@@ -425,7 +532,7 @@ func (m model) viewDone() string {
 			successStyle.Render(fmt.Sprintf("%d session(s) deleted", len(m.deleted))),
 		))
 	}
-	sb.WriteString("\n  " + dimStyle.Render("press enter or q to exit"))
+	sb.WriteString("\n  " + dimStyle.Render("enter back to list  q quit"))
 
 	return sb.String()
 }

@@ -10,7 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-var version = "2.0.0"
+var version = "1.0.0"
 
 func printHelp() {
 	fmt.Printf(`Claude Cleaner v%s  —  ePlus.DEV
@@ -93,7 +93,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	p := tea.NewProgram(newModel(claudeDir, projectsDir), tea.WithAltScreen())
+	// ~/.claude.json is one level above claudeDir (~/.claude → ~)
+	claudeJSONPath := filepath.Join(filepath.Dir(claudeDir), ".claude.json")
+
+	p := tea.NewProgram(newModel(claudeDir, claudeJSONPath, projectsDir), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

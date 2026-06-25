@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,65 +14,142 @@ import (
 )
 
 type Session struct {
-	Index    int
-	Name     string
-	Path     string
-	Modified time.Time
-	Size     int64
+	Index        int
+	Name         string
+	Path         string
+	ProjectPath  string // actual working dir from ~/.claude.json; empty if unknown
+	Modified     time.Time
+	Size         int64
+	InputTokens  int64
+	OutputTokens int64
+	HasData      bool // false = directory absent or empty (no session files found)
 }
 
-func scanSessions(projectsDir string) ([]Session, error) {
-	entries, err := os.ReadDir(projectsDir)
+// encodePath converts an actual project path to the hashed directory name
+// that Claude Code uses under ~/.claude/projects/.
+func encodePath(path string) string {
+	r := strings.NewReplacer(":", "-", "/", "-", "\\", "-")
+	return strings.ToLower(r.Replace(path))
+}
+
+// projectStats reads a flat project directory: sums file sizes and parses
+// JSONL session files for token usage in one pass. No recursive walk.
+func projectStats(dirPath string) (size, inputTokens, outputTokens int64, modified time.Time) {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		size += info.Size()
+		if info.ModTime().After(modified) {
+			modified = info.ModTime()
+		}
+		if strings.HasSuffix(e.Name(), ".jsonl") {
+			in, out := countTokensInFile(filepath.Join(dirPath, e.Name()))
+			inputTokens += in
+			outputTokens += out
+		}
+	}
+	return
+}
+
+// countTokensInFile parses a JSONL session file and sums input/output tokens
+// from assistant message usage fields. Skips lines without "usage" fast.
+func countTokensInFile(path string) (inputTokens, outputTokens int64) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20) // 1 MB per line
+
+	var entry struct {
+		Message struct {
+			Usage struct {
+				InputTokens  int64 `json:"input_tokens"`
+				OutputTokens int64 `json:"output_tokens"`
+			} `json:"usage"`
+		} `json:"message"`
+	}
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !bytes.Contains(line, []byte(`"usage"`)) {
+			continue
+		}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		inputTokens += entry.Message.Usage.InputTokens
+		outputTokens += entry.Message.Usage.OutputTokens
+	}
+	return
+}
+
+// scanSessions reads projects from claudeJSONPath (primary source of truth).
+// Falls back to scanning projectsDir directly when claudeJSONPath is absent
+// (e.g. custom --claude-dir for demos).
+func scanSessions(claudeJSONPath, projectsDir string) ([]Session, error) {
+	data, err := os.ReadFile(claudeJSONPath)
+	if os.IsNotExist(err) {
+		return scanFromDir(projectsDir)
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	type result struct {
-		s  Session
-		ok bool
+	var cfg struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil || len(cfg.Projects) == 0 {
+		return scanFromDir(projectsDir)
 	}
 
-	results := make([]result, len(entries))
+	ch := make(chan Session, len(cfg.Projects))
 	var wg sync.WaitGroup
 
-	for i, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
+	for projectPath := range cfg.Projects {
 		wg.Add(1)
-		go func(idx int, e fs.DirEntry) {
+		go func(projPath string) {
 			defer wg.Done()
-			fullPath := filepath.Join(projectsDir, e.Name())
-			info, err := e.Info()
-			if err != nil {
-				return
+			encoded := encodePath(projPath)
+			dirPath := filepath.Join(projectsDir, encoded)
+
+			size, inputTokens, outputTokens, modified := projectStats(dirPath)
+
+			ch <- Session{
+				Name:         encoded,
+				Path:         dirPath,
+				ProjectPath:  projPath,
+				Modified:     modified,
+				Size:         size,
+				InputTokens:  inputTokens,
+				OutputTokens: outputTokens,
+				HasData:      !modified.IsZero(),
 			}
-			size, _ := dirSize(fullPath)
-			results[idx] = result{
-				s: Session{
-					Name:     e.Name(),
-					Path:     fullPath,
-					Modified: info.ModTime(),
-					Size:     size,
-				},
-				ok: true,
-			}
-		}(i, entry)
+		}(projectPath)
 	}
 
 	wg.Wait()
+	close(ch)
 
 	var sessions []Session
-	for _, r := range results {
-		if r.ok {
-			sessions = append(sessions, r.s)
-		}
+	for s := range ch {
+		sessions = append(sessions, s)
 	}
 
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].Modified.After(sessions[j].Modified)
 	})
-
 	for i := range sessions {
 		sessions[i].Index = i + 1
 	}
@@ -78,20 +157,53 @@ func scanSessions(projectsDir string) ([]Session, error) {
 	return sessions, nil
 }
 
-func dirSize(root string) (int64, error) {
-	var total int64
-	err := filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
+// scanFromDir is the fallback: enumerate subdirectories of projectsDir directly.
+func scanFromDir(projectsDir string) ([]Session, error) {
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := make(chan Session, len(entries))
+	var wg sync.WaitGroup
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
 		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		total += info.Size()
-		return nil
+		wg.Add(1)
+		go func(e os.DirEntry) {
+			defer wg.Done()
+			dirPath := filepath.Join(projectsDir, e.Name())
+			size, inputTokens, outputTokens, modified := projectStats(dirPath)
+			ch <- Session{
+				Name:         e.Name(),
+				Path:         dirPath,
+				Modified:     modified,
+				Size:         size,
+				InputTokens:  inputTokens,
+				OutputTokens: outputTokens,
+				HasData:      !modified.IsZero(),
+			}
+		}(entry)
+	}
+
+	wg.Wait()
+	close(ch)
+
+	var sessions []Session
+	for s := range ch {
+		sessions = append(sessions, s)
+	}
+
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].Modified.After(sessions[j].Modified)
 	})
-	return total, err
+	for i := range sessions {
+		sessions[i].Index = i + 1
+	}
+
+	return sessions, nil
 }
 
 func safeRemove(projectsDir, targetPath string) error {
@@ -126,7 +238,21 @@ func formatSize(b int64) string {
 	}
 }
 
+func formatTokens(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
 func humanTime(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
 	d := time.Since(t)
 	switch {
 	case d < 2*time.Minute:

@@ -7,32 +7,37 @@ import (
 	"time"
 )
 
-func TestDirSize(t *testing.T) {
-	root := t.TempDir()
-	nested := filepath.Join(root, "nested")
-	if err := os.Mkdir(nested, 0755); err != nil {
+func TestProjectStats(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "one.txt"), []byte("12345"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "one.txt"), []byte("12345"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(nested, "two.txt"), []byte("1234567"), 0644); err != nil {
+	// JSONL with one usage line and one non-usage line
+	jsonl := `{"type":"user","message":{"content":"hello"}}
+{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50}}}
+`
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(jsonl), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	size, err := dirSize(root)
-	if err != nil {
-		t.Fatal(err)
+	size, in, out, mod := projectStats(dir)
+	if size == 0 {
+		t.Error("size should be > 0")
 	}
-	if size != 12 {
-		t.Errorf("expected 12, got %d", size)
+	if in != 100 {
+		t.Errorf("input_tokens want 100, got %d", in)
+	}
+	if out != 50 {
+		t.Errorf("output_tokens want 50, got %d", out)
+	}
+	if mod.IsZero() {
+		t.Error("modified should not be zero")
 	}
 }
 
 func TestSafeRemove(t *testing.T) {
 	root := t.TempDir()
 
-	// Direct child — should succeed
 	child := filepath.Join(root, "session-1")
 	if err := os.Mkdir(child, 0755); err != nil {
 		t.Fatal(err)
@@ -41,17 +46,14 @@ func TestSafeRemove(t *testing.T) {
 		t.Errorf("expected no error for direct child, got: %v", err)
 	}
 
-	// Same path as projectsDir — refuse
 	if err := safeRemove(root, root); err == nil {
 		t.Error("expected error when target equals projectsDir")
 	}
 
-	// Parent directory — refuse
 	if err := safeRemove(root, filepath.Dir(root)); err == nil {
 		t.Error("expected error for path above projectsDir")
 	}
 
-	// Nested (grandchild) path — refuse
 	nested := filepath.Join(root, "a", "b")
 	if err := os.MkdirAll(nested, 0755); err != nil {
 		t.Fatal(err)
@@ -61,11 +63,11 @@ func TestSafeRemove(t *testing.T) {
 	}
 }
 
-func TestScanSessions(t *testing.T) {
-	root := t.TempDir()
+func TestScanSessionsFromDir(t *testing.T) {
+	projectsDir := t.TempDir()
 	names := []string{"proj-a", "proj-b", "proj-c"}
 	for _, name := range names {
-		dir := filepath.Join(root, name)
+		dir := filepath.Join(projectsDir, name)
 		if err := os.Mkdir(dir, 0755); err != nil {
 			t.Fatal(err)
 		}
@@ -74,7 +76,7 @@ func TestScanSessions(t *testing.T) {
 		}
 	}
 
-	sessions, err := scanSessions(root)
+	sessions, err := scanSessions("/nonexistent/.claude.json", projectsDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +89,62 @@ func TestScanSessions(t *testing.T) {
 		}
 		if s.Size == 0 {
 			t.Errorf("session[%d].Size should be > 0", i)
+		}
+	}
+}
+
+func TestScanSessionsFromClaudeJSON(t *testing.T) {
+	projectsDir := t.TempDir()
+
+	projects := map[string]string{
+		"/home/user/my-app":     encodePath("/home/user/my-app"),
+		"/home/user/other-proj": encodePath("/home/user/other-proj"),
+	}
+	for _, encoded := range projects {
+		dir := filepath.Join(projectsDir, encoded)
+		if err := os.Mkdir(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	claudeJSON := `{"projects":{"/home/user/my-app":{},"/home/user/other-proj":{}}}`
+	jsonPath := filepath.Join(t.TempDir(), ".claude.json")
+	if err := os.WriteFile(jsonPath, []byte(claudeJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := scanSessions(jsonPath, projectsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Errorf("expected 2 sessions, got %d", len(sessions))
+	}
+	for _, s := range sessions {
+		if s.ProjectPath == "" {
+			t.Errorf("session %q should have ProjectPath set", s.Name)
+		}
+	}
+}
+
+func TestFormatTokens(t *testing.T) {
+	cases := []struct {
+		n    int64
+		want string
+	}{
+		{0, "0"},
+		{999, "999"},
+		{1000, "1.0K"},
+		{1500, "1.5K"},
+		{1_000_000, "1.0M"},
+		{2_500_000, "2.5M"},
+	}
+	for _, c := range cases {
+		if got := formatTokens(c.n); got != c.want {
+			t.Errorf("formatTokens(%d) = %q, want %q", c.n, got, c.want)
 		}
 	}
 }
@@ -114,6 +172,22 @@ func TestHumanTime(t *testing.T) {
 	}
 	if got := humanTime(time.Now().Add(-25 * time.Hour)); got != "yesterday" {
 		t.Errorf("got %q, want 'yesterday'", got)
+	}
+	if got := humanTime(time.Time{}); got != "—" {
+		t.Errorf("zero time want '—', got %q", got)
+	}
+}
+
+func TestEncodePath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"d:/laragon/www/dev/claude-session-cleaner", "d--laragon-www-dev-claude-session-cleaner"},
+		{"/Users/foo/myproject", "-users-foo-myproject"},
+		{"D:\\laragon\\www\\myapp", "d--laragon-www-myapp"},
+	}
+	for _, c := range cases {
+		if got := encodePath(c.in); got != c.want {
+			t.Errorf("encodePath(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 

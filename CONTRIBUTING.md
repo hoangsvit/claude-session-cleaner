@@ -73,13 +73,13 @@ demo/
 Version is sourced from `package.json`. Running `npm version` syncs it to `main.go` automatically.
 
 ```bash
-# Patch release (2.0.0 → 2.0.1)
+# Patch release (1.0.0 → 1.0.1)
 npm version patch
 
-# Minor release (2.0.0 → 2.1.0)
+# Minor release (1.0.0 → 1.1.0)
 npm version minor
 
-# Major release (2.0.0 → 3.0.0)
+# Major release (1.0.0 → 2.0.0)
 npm version major
 ```
 
