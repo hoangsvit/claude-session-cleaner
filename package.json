@@ -1,9 +1,9 @@
 {
-  "name": "claude-session-cleaner",
+  "name": "claude-cleaner",
   "version": "2.0.0",
   "description": "Safely inspect and delete selected Claude Code project session history from an interactive cross-platform TUI.",
   "bin": {
-    "claude-session-cleaner": "scripts/run.js"
+    "claude-cleaner": "scripts/run.js"
   },
   "scripts": {
     "postinstall": "node scripts/install.js",

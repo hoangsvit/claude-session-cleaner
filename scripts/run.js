@@ -6,12 +6,12 @@ const fs   = require("node:fs");
 const path = require("node:path");
 
 const isWindows  = process.platform === "win32";
-const binaryName = isWindows ? "claude-session-cleaner.exe" : "claude-session-cleaner";
+const binaryName = isWindows ? "claude-cleaner.exe" : "claude-cleaner";
 const binaryPath = path.join(__dirname, "..", "bin", binaryName);
 
 if (!fs.existsSync(binaryPath)) {
-  console.error("claude-session-cleaner: binary not found. Reinstall:");
-  console.error("  npm install -g claude-session-cleaner");
+  console.error("claude-cleaner: binary not found. Reinstall:");
+  console.error("  npm install -g claude-cleaner");
   process.exit(1);
 }
 

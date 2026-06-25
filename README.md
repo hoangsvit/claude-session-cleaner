@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/ePlus-DEV/claude-cleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/ePlus-DEV/claude-cleaner/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/ePlus-DEV/claude-cleaner)](https://github.com/ePlus-DEV/claude-cleaner/releases)
-[![npm version](https://img.shields.io/npm/v/claude-session-cleaner.svg)](https://www.npmjs.com/package/claude-session-cleaner)
+[![npm version](https://img.shields.io/npm/v/claude-cleaner.svg)](https://www.npmjs.com/package/claude-cleaner)
 [![Go version](https://img.shields.io/github/go-mod/go-version/ePlus-DEV/claude-cleaner)](go.mod)
 [![Go Report Card](https://goreportcard.com/badge/github.com/ePlus-DEV/claude-cleaner)](https://goreportcard.com/report/github.com/ePlus-DEV/claude-cleaner)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -51,14 +51,14 @@ Deleted session history cannot be restored by this tool.
 ### Run without installing
 
 ```bash
-npx claude-session-cleaner
+npx claude-cleaner
 ```
 
 ### Install globally
 
 ```bash
-npm install --global claude-session-cleaner
-claude-session-cleaner
+npm install --global claude-cleaner
+claude-cleaner
 ```
 
 > The npm package is a thin wrapper. On install it automatically downloads the correct pre-built binary for your platform from GitHub Releases. No Go required.
@@ -69,12 +69,12 @@ Go to [Releases](https://github.com/ePlus-DEV/claude-cleaner/releases), download
 
 | Platform | File |
 | --- | --- |
-| Linux x64 | `claude-session-cleaner_*_linux_amd64.tar.gz` |
-| Linux ARM64 | `claude-session-cleaner_*_linux_arm64.tar.gz` |
-| macOS x64 | `claude-session-cleaner_*_darwin_amd64.tar.gz` |
-| macOS Apple Silicon | `claude-session-cleaner_*_darwin_arm64.tar.gz` |
-| Windows x64 | `claude-session-cleaner_*_windows_amd64.zip` |
-| Windows ARM64 | `claude-session-cleaner_*_windows_arm64.zip` |
+| Linux x64 | `claude-cleaner_*_linux_amd64.tar.gz` |
+| Linux ARM64 | `claude-cleaner_*_linux_arm64.tar.gz` |
+| macOS x64 | `claude-cleaner_*_darwin_amd64.tar.gz` |
+| macOS Apple Silicon | `claude-cleaner_*_darwin_arm64.tar.gz` |
+| Windows x64 | `claude-cleaner_*_windows_amd64.zip` |
+| Windows ARM64 | `claude-cleaner_*_windows_arm64.zip` |
 
 ### Install with Go
 
@@ -86,18 +86,18 @@ go install github.com/ePlus-DEV/claude-cleaner@latest
 
 ```bash
 git clone https://github.com/ePlus-DEV/claude-cleaner.git
-cd claude-session-cleaner
-go build -o claude-session-cleaner .
-./claude-session-cleaner
+cd claude-cleaner
+go build -o claude-cleaner .
+./claude-cleaner
 ```
 
 ## Usage
 
 ```bash
-claude-session-cleaner
-claude-session-cleaner --claude-dir "/path/to/.claude"
-claude-session-cleaner --help
-claude-session-cleaner --version
+claude-cleaner
+claude-cleaner --claude-dir "/path/to/.claude"
+claude-cleaner --help
+claude-cleaner --version
 ```
 
 ### Options
@@ -126,13 +126,13 @@ Priority order: `--claude-dir` > `CLAUDE_CONFIG_DIR` > `~/.claude`
 ```bash
 # macOS / Linux
 export CLAUDE_CONFIG_DIR="/mnt/data/claude"
-claude-session-cleaner
+claude-cleaner
 ```
 
 ```powershell
 # Windows PowerShell
 $env:CLAUDE_CONFIG_DIR = "D:\ClaudeData"
-claude-session-cleaner
+claude-cleaner
 ```
 
 ## Troubleshooting
@@ -140,7 +140,7 @@ claude-session-cleaner
 **Claude directory not found** — Run Claude Code at least once so the directory is created, or point to the correct path:
 
 ```bash
-claude-session-cleaner --claude-dir "/correct/path/.claude"
+claude-cleaner --claude-dir "/correct/path/.claude"
 ```
 
 **Permission denied** — Run as the same OS user that owns the Claude config directory.
@@ -148,7 +148,7 @@ claude-session-cleaner --claude-dir "/correct/path/.claude"
 **Binary not found after `npx`** — Try reinstalling:
 
 ```bash
-npm install --global claude-session-cleaner
+npm install --global claude-cleaner
 ```
 
 ## Development

@@ -18,10 +18,10 @@ func printHelp() {
 Interactive TUI to safely delete selected Claude Code project session logs.
 
 Usage:
-  claude-session-cleaner
-  claude-session-cleaner --claude-dir <path>
-  claude-session-cleaner --help
-  claude-session-cleaner --version
+  claude-cleaner
+  claude-cleaner --claude-dir <path>
+  claude-cleaner --help
+  claude-cleaner --version
 
 Options:
   --claude-dir <path>   Custom Claude config directory (default: ~/.claude)

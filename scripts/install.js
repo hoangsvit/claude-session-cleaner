@@ -16,14 +16,14 @@ const platform = PLATFORMS[process.platform];
 const arch     = ARCHS[process.arch];
 
 if (!platform || !arch) {
-  console.warn(`claude-session-cleaner: unsupported platform ${process.platform}/${process.arch}, skipping binary download.`);
+  console.warn(`claude-cleaner: unsupported platform ${process.platform}/${process.arch}, skipping binary download.`);
   process.exit(0);
 }
 
 const isWindows  = platform === "windows";
-const binaryName = isWindows ? "claude-session-cleaner.exe" : "claude-session-cleaner";
+const binaryName = isWindows ? "claude-cleaner.exe" : "claude-cleaner";
 const ext        = isWindows ? ".zip" : ".tar.gz";
-const archive    = `claude-session-cleaner_${pkg.version}_${platform}_${arch}${ext}`;
+const archive    = `claude-cleaner_${pkg.version}_${platform}_${arch}${ext}`;
 const url        = `https://github.com/ePlus-DEV/claude-cleaner/releases/download/v${pkg.version}/${archive}`;
 
 const binDir     = path.join(__dirname, "..", "bin");
@@ -36,7 +36,7 @@ fs.mkdirSync(binDir, { recursive: true });
 const tmpDir      = fs.mkdtempSync(path.join(os.tmpdir(), "csc-"));
 const archivePath = path.join(tmpDir, archive);
 
-console.log(`Downloading claude-session-cleaner v${pkg.version} (${platform}/${arch})…`);
+console.log(`Downloading claude-cleaner v${pkg.version} (${platform}/${arch})…`);
 
 download(url, archivePath)
   .then(() => {
@@ -45,11 +45,11 @@ download(url, archivePath)
     fs.copyFileSync(src, binaryPath);
     if (!isWindows) fs.chmodSync(binaryPath, 0o755);
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    console.log("claude-session-cleaner: ready.");
+    console.log("claude-cleaner: ready.");
   })
   .catch((err) => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    console.warn(`claude-session-cleaner: download failed — ${err.message}`);
+    console.warn(`claude-cleaner: download failed — ${err.message}`);
     console.warn(`Manual install: ${url}`);
     process.exit(0); // never block npm install
   });

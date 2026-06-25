@@ -16,7 +16,7 @@ builds:
       - arm64
     ldflags:
       - -s -w -X main.version={{.Version}}
-    binary: claude-session-cleaner
+    binary: claude-cleaner
 
 archives:
   - format: tar.gz

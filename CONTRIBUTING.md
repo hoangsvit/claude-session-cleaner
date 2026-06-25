@@ -21,15 +21,15 @@ Thank you for your interest in contributing!
 
 ```bash
 git clone https://github.com/ePlus-DEV/claude-cleaner.git
-cd claude-session-cleaner
+cd claude-cleaner
 go mod tidy
 ```
 
 ## Build & run
 
 ```bash
-go build -o claude-session-cleaner .
-./claude-session-cleaner --help
+go build -o claude-cleaner .
+./claude-cleaner --help
 ```
 
 Or without building:
@@ -118,7 +118,7 @@ Open an issue at [github.com/ePlus-DEV/claude-cleaner/issues](https://github.com
 
 Include:
 - OS and architecture
-- `claude-session-cleaner --version` output
+- `claude-cleaner --version` output
 - Steps to reproduce
 - Expected vs actual behavior
 
