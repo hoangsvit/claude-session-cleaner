@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake claude CLI for demo recordings — returns a realistic version string.
+echo "Claude CLI 1.0.17 (claude-code)"

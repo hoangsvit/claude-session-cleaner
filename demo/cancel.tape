@@ -6,7 +6,7 @@ Set Framerate 15
 Set Margin 0
 Set PlaybackSpeed 0.8
 
-Type "./claude-cleaner --claude-dir /tmp/claude-demo"
+Type "PATH=\"$PWD/demo/mock-bin:$PATH\" ./claude-cleaner --claude-dir /tmp/claude-demo"
 Enter
 Sleep 3s
 

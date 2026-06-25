@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -78,6 +79,8 @@ func main() {
 		return
 	}
 
+	cleanupOldBinary()
+
 	claudeDir, err := resolveClaudeDir(claudeDirFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -146,4 +149,26 @@ func main() {
 func isTempBuild(exe string) bool {
 	return strings.Contains(exe, "go-build") ||
 		strings.Contains(exe, string(os.PathSeparator)+"T"+string(os.PathSeparator)) // macOS /var/folders/T/
+}
+
+// prepareWindowsUpdate renames the running exe to .old on Windows so npm can
+// overwrite it (Windows locks running executables from being replaced in-place).
+// The .old file is cleaned up on the next startup via cleanupOldBinary.
+func prepareWindowsUpdate() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil || isTempBuild(exe) {
+		return
+	}
+	_ = os.Rename(exe, exe+".old")
+}
+
+// cleanupOldBinary removes any leftover .old binary from a previous update.
+func cleanupOldBinary() {
+	exe, err := os.Executable()
+	if err == nil {
+		_ = os.Remove(exe + ".old")
+	}
 }

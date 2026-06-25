@@ -52,6 +52,9 @@ jobs:
       - name: Seed demo data
         run: node demo/seed.js /tmp/claude-demo
 
+      - name: Make mock binaries executable
+        run: chmod +x demo/mock-bin/*
+
       - name: Generate GIFs
         env:
           COLORTERM: truecolor

@@ -310,6 +310,7 @@ func (m model) doUpdate() (tea.Model, tea.Cmd) {
 				time.Sleep(2 * time.Second) // simulate npm install duration
 				return updateDoneMsg{nil}
 			}
+			prepareWindowsUpdate()
 			cmd := exec.Command("npm", "install", "-g", "claude-cleaner@latest")
 			return updateDoneMsg{cmd.Run()}
 		},
@@ -414,6 +415,7 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "u", "U":
 		if m.hasUpdate {
+			prepareWindowsUpdate()
 			cmd := exec.Command("npm", "install", "-g", "claude-cleaner@latest")
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 				return updateDoneMsg{err}
