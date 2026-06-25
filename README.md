@@ -192,6 +192,10 @@ git push --follow-tags
 
 GoReleaser builds for Linux, macOS, and Windows on amd64 and arm64.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, build instructions, project structure, and release process.
+
 ## License
 
 MIT

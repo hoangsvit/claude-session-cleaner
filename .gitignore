@@ -1,7 +1,10 @@
-# Go
+# Go build output
 /claude-session-cleaner
 /claude-session-cleaner.exe
 /dist/
+
+# npm wrapper — downloaded binary (not committed)
+/bin/
 
 # macOS
 .DS_Store

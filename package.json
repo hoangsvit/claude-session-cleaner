@@ -1,0 +1,45 @@
+{
+  "name": "claude-session-cleaner",
+  "version": "2.0.0",
+  "description": "Safely inspect and delete selected Claude Code project session history from an interactive cross-platform TUI.",
+  "bin": {
+    "claude-session-cleaner": "scripts/run.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js",
+    "version": "node scripts/sync-version.js && git add main.go"
+  },
+  "files": [
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "cleaner",
+    "cleanup",
+    "session",
+    "session-cleaner",
+    "history",
+    "cli",
+    "cross-platform"
+  ],
+  "author": "David",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hoangsvit/claude-session-cleaner.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hoangsvit/claude-session-cleaner/issues"
+  },
+  "homepage": "https://github.com/hoangsvit/claude-session-cleaner#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
