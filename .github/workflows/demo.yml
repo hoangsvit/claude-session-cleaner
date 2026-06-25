@@ -1,0 +1,47 @@
+name: Generate Demo GIFs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - bin/**
+      - demo/*.tape
+      - demo/seed.js
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    name: Render GIFs with VHS
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Generate help GIF
+        uses: charmbracelet/vhs-action@v2
+        with:
+          path: demo/help.tape
+
+      - name: Generate full-flow GIF
+        uses: charmbracelet/vhs-action@v2
+        with:
+          path: demo/full.tape
+
+      - name: Generate cancel-flow GIF
+        uses: charmbracelet/vhs-action@v2
+        with:
+          path: demo/cancel.tape
+
+      - name: Commit GIFs
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update demo GIFs [skip ci]"
+          file_pattern: demo/*.gif

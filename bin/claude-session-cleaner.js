@@ -213,14 +213,15 @@ function printProjectTable(items) {
   console.log("Only selected Claude session/log folders will be deleted. Source code is NOT deleted.");
   console.log("");
 
-  console.table(
-    items.map((item) => ({
-      "#": item.index,
+  const table = {};
+  for (const item of items) {
+    table[item.index] = {
       Name: item.name,
       "Last modified": item.lastWrite.toLocaleString(),
       Size: formatSize(item.sizeBytes),
-    }))
-  );
+    };
+  }
+  console.table(table);
 }
 
 function ask(readlineInterface, question) {
@@ -267,7 +268,7 @@ async function main() {
   const projectsDir = path.join(claudeDir, "projects");
 
   console.clear();
-  console.log(`Claude Session Cleaner v${pkg.version}`);
+  console.log(`Claude Session Cleaner v${pkg.version}  —  ePlus.DEV`);
   console.log(`OS: ${process.platform}`);
   console.log(`Claude dir: ${claudeDir}`);
   console.log(`Projects dir: ${projectsDir}`);
@@ -336,15 +337,16 @@ async function main() {
 
       console.log("");
       console.log("====== WILL DELETE ======");
-      console.table(
-        selectedItems.map((item) => ({
-          "#": item.index,
+      const deleteTable = {};
+      for (const item of selectedItems) {
+        deleteTable[item.index] = {
           Name: item.name,
           "Last modified": item.lastWrite.toLocaleString(),
           Size: formatSize(item.sizeBytes),
           Path: item.path,
-        }))
-      );
+        };
+      }
+      console.table(deleteTable);
 
       console.log("");
       console.log("WARNING:");

@@ -10,7 +10,15 @@ select.
 
 It runs on Windows, macOS, and Linux with Node.js 20 or newer.
 
-![Claude Session Cleaner preview](https://github.com/user-attachments/assets/89094ee1-2a41-4aec-b47e-a14425b57d4c)
+![Full demo](demo/full.gif)
+
+## Demos
+
+| Scenario | Preview |
+| --- | --- |
+| `--help` | ![Help](demo/help.gif) |
+| Delete a session | ![Full flow](demo/full.gif) |
+| Cancel confirmation | ![Cancel](demo/cancel.gif) |
 
 ## Features
 
