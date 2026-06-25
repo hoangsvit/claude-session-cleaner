@@ -1,4 +1,6 @@
 # Go build output
+/claude-cleaner
+/claude-cleaner.exe
 /claude-session-cleaner
 /claude-session-cleaner.exe
 /dist/

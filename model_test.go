@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -19,6 +20,60 @@ func fakeSessions(n int) []Session {
 		s[i] = Session{Index: i + 1, Name: "session" + string(rune('A'+i)), Size: 1024}
 	}
 	return s
+}
+
+// realisticSessions returns sessions resembling real Claude project data:
+// mix of HasData/no-data, varied token counts, realistic project paths.
+func realisticSessions() []Session {
+	ago := func(minutes int) time.Time {
+		return time.Now().Add(-time.Duration(minutes) * time.Minute)
+	}
+	day := func(days int) time.Time {
+		return time.Now().AddDate(0, 0, -days)
+	}
+
+	return []Session{
+		{
+			Index: 1, Name: encodePath("/home/user/projects/webapp-frontend"),
+			ProjectPath: "/home/user/projects/webapp-frontend",
+			Modified: ago(9), Size: 1_887_437,
+			TotalTokens: 0, HasTokenData: true, HasData: true,
+		},
+		{
+			Index: 2, Name: encodePath("/home/user/projects/api-service"),
+			ProjectPath: "/home/user/projects/api-service",
+			Modified: ago(25), Size: 72_704_000,
+			TotalTokens: 154200, HasTokenData: true, HasData: true,
+		},
+		{
+			Index: 3, Name: encodePath("/home/user/projects/mobile-app"),
+			ProjectPath: "/home/user/projects/mobile-app",
+			Modified: day(1), Size: 806_912,
+			TotalTokens: 531800, HasTokenData: true, HasData: true,
+		},
+		{
+			Index: 4, Name: encodePath("/home/user/projects/data-pipeline"),
+			ProjectPath: "/home/user/projects/data-pipeline",
+			Modified: day(25), Size: 194_355,
+			TotalTokens: 0, HasTokenData: true, HasData: true,
+		},
+		{
+			Index: 5, Name: encodePath("/home/user/projects/infra-scripts"),
+			ProjectPath: "/home/user/projects/infra-scripts",
+			Modified: day(25), Size: 419_635,
+			TotalTokens: 213100, HasTokenData: true, HasData: true,
+		},
+		{
+			Index: 6, Name: encodePath("/home/user/projects/design-system"),
+			ProjectPath: "/home/user/projects/design-system",
+			HasData: false, HasTokenData: false,
+		},
+		{
+			Index: 7, Name: encodePath("/home/user/projects/archived-tool"),
+			ProjectPath: "/home/user/projects/archived-tool",
+			HasData: false, HasTokenData: false,
+		},
+	}
 }
 
 func pressKey(m model, key string) model {
@@ -219,5 +274,213 @@ func TestDoneQQuits(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	if cmd == nil {
 		t.Error("q in stateDone should quit")
+	}
+}
+
+// --- vim key navigation ---
+
+func TestJKNavigation(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	m = pressKey(m, "j")
+	if m.cursor != 1 {
+		t.Errorf("j should move cursor down, got %d", m.cursor)
+	}
+	m = pressKey(m, "k")
+	if m.cursor != 0 {
+		t.Errorf("k should move cursor up, got %d", m.cursor)
+	}
+}
+
+// --- purge mode ---
+
+func TestPKeyEntersPurgeModeConfirm(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	m.selected[1] = true
+	m = pressKey(m, "p")
+	if m.state != stateConfirm {
+		t.Errorf("p should go stateConfirm, got %v", m.state)
+	}
+	if !m.purgeMode {
+		t.Error("purgeMode should be true after p")
+	}
+}
+
+func TestPKeyNoSelectionStaysList(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	m = pressKey(m, "p")
+	if m.state != stateList {
+		t.Errorf("p with no selection should stay stateList, got %v", m.state)
+	}
+}
+
+func TestDeleteModeNotPurge(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	m.selected[1] = true
+	m = pressKey(m, "enter")
+	if m.purgeMode {
+		t.Error("enter/delete should set purgeMode=false")
+	}
+}
+
+// --- force-purge (x key) ---
+
+func TestXKeyGoesToDeleting(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m = next.(model)
+	if m.state != stateDeleting {
+		t.Errorf("x should go stateDeleting, got %v", m.state)
+	}
+}
+
+func TestXKeyNoSessionsStaysList(t *testing.T) {
+	m := makeTestModel(nil)
+	m = pressKey(m, "x")
+	if m.state != stateList {
+		t.Errorf("x with no sessions should stay stateList, got %v", m.state)
+	}
+}
+
+// --- confirm screen keys ---
+
+func TestConfirmNReturnsToList(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	m.selected[1] = true
+	m = pressKey(m, "enter")
+	m = pressKey(m, "n")
+	if m.state != stateList {
+		t.Errorf("n in confirm should return stateList, got %v", m.state)
+	}
+}
+
+func TestConfirmHLNavigation(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	m.selected[1] = true
+	m = pressKey(m, "enter")
+	m = pressKey(m, "l") // vim right → Yes
+	if m.confirmIdx != 1 {
+		t.Errorf("l should move to Yes (1), got %d", m.confirmIdx)
+	}
+	m = pressKey(m, "h") // vim left → No
+	if m.confirmIdx != 0 {
+		t.Errorf("h should move to No (0), got %d", m.confirmIdx)
+	}
+}
+
+func TestConfirmTabNavigation(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	m.selected[1] = true
+	m = pressKey(m, "enter")
+	// tab moves to No (left)
+	msg := tea.KeyMsg{Type: tea.KeyTab}
+	next, _ := m.Update(msg)
+	m = next.(model)
+	if m.confirmIdx != 0 {
+		t.Errorf("tab should set confirmIdx 0, got %d", m.confirmIdx)
+	}
+}
+
+// --- q quits from all states ---
+
+func TestQQuitFromConfirm(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	m.state = stateConfirm
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmd == nil {
+		t.Error("q should quit from stateConfirm")
+	}
+}
+
+func TestQQuitFromDeleting(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	m.state = stateDeleting
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmd == nil {
+		t.Error("q should quit from stateDeleting")
+	}
+}
+
+func TestQQuitFromLoading(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	m.state = stateLoading
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmd == nil {
+		t.Error("q should quit from stateLoading")
+	}
+}
+
+// --- misc messages ---
+
+func TestWindowSizeMsgUpdatesWidth(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = next.(model)
+	if m.width != 120 {
+		t.Errorf("width should be 120, got %d", m.width)
+	}
+}
+
+func TestClaudeCLIMsgStoresVersion(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	next, _ := m.Update(claudeCLIMsg{version: "1.2.3"})
+	m = next.(model)
+	if m.claudeCLIVersion != "1.2.3" {
+		t.Errorf("claudeCLIVersion want '1.2.3', got %q", m.claudeCLIVersion)
+	}
+	if !m.claudeCLIDetected {
+		t.Error("claudeCLIDetected should be true")
+	}
+}
+
+func TestClaudeCLIMsgNotFound(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	next, _ := m.Update(claudeCLIMsg{version: ""})
+	m = next.(model)
+	if !m.claudeCLIDetected {
+		t.Error("claudeCLIDetected should be true even when CLI not found")
+	}
+	if m.claudeCLIVersion != "" {
+		t.Errorf("claudeCLIVersion should be empty, got %q", m.claudeCLIVersion)
+	}
+}
+
+func TestDeleteItemMsgUpdatesProgress(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	m.state = stateDeleting
+	m.deleteTotal = 3
+	m.deleteSelectedSnap = map[int]bool{1: true, 2: true, 3: true}
+	next, _ := m.Update(deleteItemMsg{done: 1, total: 3, deleted: []string{"a"}, failed: nil, nextIdx: 1})
+	m = next.(model)
+	if m.deleteProgress != 1 {
+		t.Errorf("deleteProgress want 1, got %d", m.deleteProgress)
+	}
+}
+
+func TestDeleteProgressResetOnDone(t *testing.T) {
+	m := makeTestModel(fakeSessions(3))
+	m.deleteTotal = 5
+	m.deleteProgress = 3
+	next, _ := m.Update(deleteDoneMsg{deleted: []string{"a"}, failed: nil})
+	m = next.(model)
+	if m.deleteTotal != 0 || m.deleteProgress != 0 {
+		t.Errorf("deleteTotal/Progress should reset, got total=%d progress=%d", m.deleteTotal, m.deleteProgress)
+	}
+}
+
+// --- empty sessions edge cases ---
+
+func TestEmptySessionsNoActionOnEnter(t *testing.T) {
+	m := makeTestModel(nil)
+	m = pressKey(m, "enter")
+	if m.state != stateList {
+		t.Errorf("enter on empty list should stay stateList, got %v", m.state)
+	}
+}
+
+func TestEmptySessionsNoActionOnSpace(t *testing.T) {
+	m := makeTestModel(nil)
+	m = pressKey(m, " ")
+	if m.state != stateList {
+		t.Errorf("space on empty list should stay stateList, got %v", m.state)
 	}
 }

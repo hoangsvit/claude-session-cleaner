@@ -12,26 +12,80 @@ func TestProjectStats(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "one.txt"), []byte("12345"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	// JSONL with one usage line and one non-usage line
-	jsonl := `{"type":"user","message":{"content":"hello"}}
-{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50}}}
-`
-	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(jsonl), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	size, in, out, mod := projectStats(dir)
+	size, mod := projectStats(dir)
 	if size == 0 {
 		t.Error("size should be > 0")
 	}
-	if in != 100 {
-		t.Errorf("input_tokens want 100, got %d", in)
-	}
-	if out != 50 {
-		t.Errorf("output_tokens want 50, got %d", out)
-	}
 	if mod.IsZero() {
 		t.Error("modified should not be zero")
+	}
+}
+
+func TestProjectEntryTotal(t *testing.T) {
+	i := int64(100)
+	o := int64(50)
+	cc := int64(20)
+	cr := int64(10)
+	e := projectEntry{
+		LastTotalInputTokens:              &i,
+		LastTotalOutputTokens:             &o,
+		LastTotalCacheCreationInputTokens: &cc,
+		LastTotalCacheReadInputTokens:     &cr,
+	}
+	if got := e.total(); got != 180 {
+		t.Errorf("total want 180, got %d", got)
+	}
+	if !e.hasAnyField() {
+		t.Error("hasAnyField should be true")
+	}
+
+	empty := projectEntry{}
+	if empty.hasAnyField() {
+		t.Error("empty entry hasAnyField should be false")
+	}
+	if empty.total() != 0 {
+		t.Error("empty entry total should be 0")
+	}
+}
+
+func TestDeduplicateProjects(t *testing.T) {
+	i1 := int64(1000)
+	i2 := int64(500)
+	raw := map[string]projectEntry{
+		"d:/laragon/www/g-front": {LastTotalInputTokens: &i1},
+		"D:/laragon/www/g-front": {LastTotalInputTokens: &i2}, // duplicate, lower tokens
+		"/home/user/app":         {},
+	}
+	deduped := deduplicateProjects(raw)
+
+	if len(deduped) != 2 {
+		t.Errorf("expected 2 after dedup, got %d", len(deduped))
+	}
+	// The higher-token entry (i1=1000) should win
+	for path, entry := range deduped {
+		norm := normalizePath(path)
+		if norm == "d:/laragon/www/g-front" {
+			if entry.total() != 1000 {
+				t.Errorf("expected winning entry to have total 1000, got %d", entry.total())
+			}
+		}
+	}
+}
+
+func TestNormalizePath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"d:/laragon/www/g-front", "d:/laragon/www/g-front"},
+		{"D:/laragon/www/g-front", "d:/laragon/www/g-front"},
+		{"D:\\laragon\\www\\g-front", "d:/laragon/www/g-front"},
+	}
+	for _, c := range cases {
+		if got := normalizePath(c.in); got != c.want {
+			t.Errorf("normalizePath(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -96,6 +150,9 @@ func TestScanSessionsFromDir(t *testing.T) {
 func TestScanSessionsFromClaudeJSON(t *testing.T) {
 	projectsDir := t.TempDir()
 
+	i := int64(108600)
+	o := int64(50000)
+
 	projects := map[string]string{
 		"/home/user/my-app":     encodePath("/home/user/my-app"),
 		"/home/user/other-proj": encodePath("/home/user/other-proj"),
@@ -110,7 +167,7 @@ func TestScanSessionsFromClaudeJSON(t *testing.T) {
 		}
 	}
 
-	claudeJSON := `{"projects":{"/home/user/my-app":{},"/home/user/other-proj":{}}}`
+	claudeJSON := `{"projects":{"/home/user/my-app":{"lastTotalInputTokens":108600,"lastTotalOutputTokens":50000},"/home/user/other-proj":{}}}`
 	jsonPath := filepath.Join(t.TempDir(), ".claude.json")
 	if err := os.WriteFile(jsonPath, []byte(claudeJSON), 0644); err != nil {
 		t.Fatal(err)
@@ -127,6 +184,20 @@ func TestScanSessionsFromClaudeJSON(t *testing.T) {
 		if s.ProjectPath == "" {
 			t.Errorf("session %q should have ProjectPath set", s.Name)
 		}
+		if s.ProjectPath == "/home/user/my-app" {
+			if !s.HasTokenData {
+				t.Error("my-app should have token data")
+			}
+			want := i + o
+			if s.TotalTokens != want {
+				t.Errorf("my-app total tokens want %d, got %d", want, s.TotalTokens)
+			}
+		}
+		if s.ProjectPath == "/home/user/other-proj" {
+			if s.HasTokenData {
+				t.Error("other-proj should not have token data (no fields in JSON)")
+			}
+		}
 	}
 }
 
@@ -138,9 +209,14 @@ func TestFormatTokens(t *testing.T) {
 		{0, "0"},
 		{999, "999"},
 		{1000, "1.0K"},
-		{1500, "1.5K"},
+		{108600, "108.6K"},
 		{1_000_000, "1.0M"},
-		{2_500_000, "2.5M"},
+		{10_700_000, "10.7M"},
+		{1_000_000_000, "1.0B"},
+		{2_500_000_000, "2.5B"},
+		{1_000_000_000_000, "1.0T"},
+		{1_000_000_000_000_000, "1.0P"},
+		{1_000_000_000_000_000_000, "1.0E"},
 	}
 	for _, c := range cases {
 		if got := formatTokens(c.n); got != c.want {
@@ -197,5 +273,156 @@ func TestTruncate(t *testing.T) {
 	}
 	if got := truncate("hello world", 8); got != "hello w…" {
 		t.Errorf("got %q, want 'hello w…'", got)
+	}
+}
+
+// --- malformed / empty JSON ---
+
+func TestScanSessionsMalformedJSONFallsBack(t *testing.T) {
+	projectsDir := t.TempDir()
+	dir := filepath.Join(projectsDir, "proj-x")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	jsonPath := filepath.Join(t.TempDir(), ".claude.json")
+	if err := os.WriteFile(jsonPath, []byte("{not valid json"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := scanSessions(jsonPath, projectsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Errorf("malformed JSON should fallback to dir scan, got %d sessions", len(sessions))
+	}
+}
+
+func TestScanSessionsEmptyProjectsFallsBack(t *testing.T) {
+	projectsDir := t.TempDir()
+	dir := filepath.Join(projectsDir, "proj-y")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "f.jsonl"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	jsonPath := filepath.Join(t.TempDir(), ".claude.json")
+	if err := os.WriteFile(jsonPath, []byte(`{"projects":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := scanSessions(jsonPath, projectsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Errorf("empty projects map should fallback to dir scan, got %d sessions", len(sessions))
+	}
+}
+
+// --- projectStats skips subdirectories ---
+
+func TestProjectStatsSkipsSubdirs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "subdir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "subdir", "nested.jsonl"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// No files at top level — only subdir
+	size, mod := projectStats(dir)
+	if size != 0 {
+		t.Errorf("projectStats should skip subdirs, got size %d", size)
+	}
+	if !mod.IsZero() {
+		t.Error("projectStats should skip subdirs, got non-zero mtime")
+	}
+}
+
+func TestProjectStatsEmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	size, mod := projectStats(dir)
+	if size != 0 {
+		t.Errorf("empty dir size want 0, got %d", size)
+	}
+	if !mod.IsZero() {
+		t.Error("empty dir mtime should be zero")
+	}
+}
+
+func TestProjectStatsNonexistentDir(t *testing.T) {
+	size, mod := projectStats("/nonexistent/path/xyz")
+	if size != 0 || !mod.IsZero() {
+		t.Error("nonexistent dir should return zero size and zero mtime")
+	}
+}
+
+// --- RunDelete partial vs all ---
+
+func TestRunDeletePartialSelection(t *testing.T) {
+	projectsDir := t.TempDir()
+
+	makeSession := func(idx int, name string) Session {
+		dir := filepath.Join(projectsDir, name)
+		_ = os.Mkdir(dir, 0755)
+		_ = os.WriteFile(filepath.Join(dir, "f.jsonl"), []byte("x"), 0644)
+		return Session{Index: idx, Name: name, Path: dir}
+	}
+
+	sessions := []Session{
+		makeSession(1, "proj-a"),
+		makeSession(2, "proj-b"),
+		makeSession(3, "proj-c"),
+	}
+	// Only select proj-a and proj-c
+	selected := map[int]bool{1: true, 3: true}
+
+	deleted, failed := RunDelete(sessions, selected, projectsDir)
+
+	if len(failed) != 0 {
+		t.Errorf("no failures expected, got %v", failed)
+	}
+	if len(deleted) != 2 {
+		t.Errorf("want 2 deleted, got %d: %v", len(deleted), deleted)
+	}
+	// proj-b should still exist
+	if _, err := os.Stat(filepath.Join(projectsDir, "proj-b")); os.IsNotExist(err) {
+		t.Error("proj-b should NOT be deleted (not selected)")
+	}
+	// proj-a and proj-c should be gone
+	if _, err := os.Stat(filepath.Join(projectsDir, "proj-a")); !os.IsNotExist(err) {
+		t.Error("proj-a should be deleted")
+	}
+}
+
+// --- smartDelete with no ProjectPath ---
+
+func TestSmartDeleteNoProjectPath(t *testing.T) {
+	projectsDir := t.TempDir()
+	dir := filepath.Join(projectsDir, "orphan")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	s := Session{Index: 1, Name: "orphan", Path: dir, ProjectPath: ""}
+	if err := smartDelete(s, projectsDir); err != nil {
+		t.Errorf("smartDelete with no ProjectPath should still remove dir: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Error("dir should be removed")
+	}
+}
+
+func TestSmartDeleteAlreadyGone(t *testing.T) {
+	projectsDir := t.TempDir()
+	s := Session{Index: 1, Name: "gone", Path: filepath.Join(projectsDir, "gone"), ProjectPath: ""}
+	if err := smartDelete(s, projectsDir); err != nil {
+		t.Errorf("smartDelete on nonexistent path should succeed: %v", err)
 	}
 }
