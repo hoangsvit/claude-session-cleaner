@@ -1,10 +1,10 @@
 # Claude Session Cleaner
 
-[![CI](https://github.com/ePlus-DEV/claude-session-cleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/ePlus-DEV/claude-session-cleaner/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/ePlus-DEV/claude-session-cleaner)](https://github.com/ePlus-DEV/claude-session-cleaner/releases)
+[![CI](https://github.com/ePlus-DEV/claude-cleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/ePlus-DEV/claude-cleaner/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ePlus-DEV/claude-cleaner)](https://github.com/ePlus-DEV/claude-cleaner/releases)
 [![npm version](https://img.shields.io/npm/v/claude-session-cleaner.svg)](https://www.npmjs.com/package/claude-session-cleaner)
-[![Go version](https://img.shields.io/github/go-mod/go-version/ePlus-DEV/claude-session-cleaner)](go.mod)
-[![Go Report Card](https://goreportcard.com/badge/github.com/ePlus-DEV/claude-session-cleaner)](https://goreportcard.com/report/github.com/ePlus-DEV/claude-session-cleaner)
+[![Go version](https://img.shields.io/github/go-mod/go-version/ePlus-DEV/claude-cleaner)](go.mod)
+[![Go Report Card](https://goreportcard.com/badge/github.com/ePlus-DEV/claude-cleaner)](https://goreportcard.com/report/github.com/ePlus-DEV/claude-cleaner)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **Claude Session Cleaner** is an interactive terminal UI — built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lip Gloss](https://github.com/charmbracelet/lipgloss) — that inspects Claude Code project session history, displays disk usage, and safely deletes only the sessions you select.
@@ -65,7 +65,7 @@ claude-session-cleaner
 
 ### Download binary directly
 
-Go to [Releases](https://github.com/ePlus-DEV/claude-session-cleaner/releases), download the archive for your platform, extract, and run.
+Go to [Releases](https://github.com/ePlus-DEV/claude-cleaner/releases), download the archive for your platform, extract, and run.
 
 | Platform | File |
 | --- | --- |
@@ -79,13 +79,13 @@ Go to [Releases](https://github.com/ePlus-DEV/claude-session-cleaner/releases), 
 ### Install with Go
 
 ```bash
-go install github.com/ePlus-DEV/claude-session-cleaner@latest
+go install github.com/ePlus-DEV/claude-cleaner@latest
 ```
 
 ### Build from source
 
 ```bash
-git clone https://github.com/ePlus-DEV/claude-session-cleaner.git
+git clone https://github.com/ePlus-DEV/claude-cleaner.git
 cd claude-session-cleaner
 go build -o claude-session-cleaner .
 ./claude-session-cleaner
