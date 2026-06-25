@@ -20,7 +20,7 @@ Thank you for your interest in contributing!
 ## Set up
 
 ```bash
-git clone https://github.com/hoangsvit/claude-session-cleaner.git
+git clone https://github.com/ePlus-DEV/claude-session-cleaner.git
 cd claude-session-cleaner
 go mod tidy
 ```
@@ -114,7 +114,7 @@ docs: improve README install section
 
 ## Reporting issues
 
-Open an issue at [github.com/hoangsvit/claude-session-cleaner/issues](https://github.com/hoangsvit/claude-session-cleaner/issues).
+Open an issue at [github.com/ePlus-DEV/claude-session-cleaner/issues](https://github.com/ePlus-DEV/claude-session-cleaner/issues).
 
 Include:
 - OS and architecture

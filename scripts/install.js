@@ -24,7 +24,7 @@ const isWindows  = platform === "windows";
 const binaryName = isWindows ? "claude-session-cleaner.exe" : "claude-session-cleaner";
 const ext        = isWindows ? ".zip" : ".tar.gz";
 const archive    = `claude-session-cleaner_${pkg.version}_${platform}_${arch}${ext}`;
-const url        = `https://github.com/hoangsvit/claude-session-cleaner/releases/download/v${pkg.version}/${archive}`;
+const url        = `https://github.com/ePlus-DEV/claude-session-cleaner/releases/download/v${pkg.version}/${archive}`;
 
 const binDir     = path.join(__dirname, "..", "bin");
 const binaryPath = path.join(binDir, binaryName);

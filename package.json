@@ -32,12 +32,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hoangsvit/claude-session-cleaner.git"
+    "url": "git+https://github.com/ePlus-DEV/claude-session-cleaner.git"
   },
   "bugs": {
-    "url": "https://github.com/hoangsvit/claude-session-cleaner/issues"
+    "url": "https://github.com/ePlus-DEV/claude-session-cleaner/issues"
   },
-  "homepage": "https://github.com/hoangsvit/claude-session-cleaner#readme",
+  "homepage": "https://github.com/ePlus-DEV/claude-session-cleaner#readme",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"

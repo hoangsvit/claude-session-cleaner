@@ -1,4 +1,4 @@
-module github.com/hoangsvit/claude-session-cleaner
+module github.com/ePlus-DEV/claude-session-cleaner
 
 go 1.22
 
