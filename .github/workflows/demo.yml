@@ -28,7 +28,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.24"
           cache: true
 
       - uses: actions/setup-node@v5
@@ -41,13 +41,16 @@ jobs:
           sudo apt-get install -y ffmpeg ttyd
 
       - name: Install VHS
-        run: go install github.com/charmbracelet/vhs@latest
+        run: go install github.com/charmbracelet/vhs@v0.9.0
 
       - name: Download app dependencies
         run: go mod tidy
 
       - name: Build binary
         run: go build -o claude-cleaner .
+
+      - name: Seed demo data
+        run: node demo/seed.js /tmp/claude-demo
 
       - name: Generate GIFs
         run: |
