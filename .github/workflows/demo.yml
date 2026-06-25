@@ -33,6 +33,11 @@ jobs:
       - name: Download dependencies
         run: go mod tidy
 
+      - name: Install ffmpeg and ttyd
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg ttyd
+
       - name: Build binary
         run: go build -o claude-session-cleaner .
 
