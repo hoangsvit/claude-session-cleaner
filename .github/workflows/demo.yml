@@ -30,31 +30,25 @@ jobs:
         with:
           node-version: 24
 
-      - name: Download dependencies
-        run: go mod tidy
-
-      - name: Install ffmpeg and ttyd
+      - name: Install system dependencies
         run: |
           sudo apt-get update -y
           sudo apt-get install -y ffmpeg ttyd
 
+      - name: Install VHS
+        run: go install github.com/charmbracelet/vhs@latest
+
+      - name: Download app dependencies
+        run: go mod tidy
+
       - name: Build binary
         run: go build -o claude-session-cleaner .
 
-      - name: Generate help GIF
-        uses: charmbracelet/vhs-action@v2
-        with:
-          path: demo/help.tape
-
-      - name: Generate full-flow GIF
-        uses: charmbracelet/vhs-action@v2
-        with:
-          path: demo/full.tape
-
-      - name: Generate cancel-flow GIF
-        uses: charmbracelet/vhs-action@v2
-        with:
-          path: demo/cancel.tape
+      - name: Generate GIFs
+        run: |
+          vhs demo/help.tape
+          vhs demo/full.tape
+          vhs demo/cancel.tape
 
       - name: Commit GIFs
         uses: stefanzweifel/git-auto-commit-action@v5
