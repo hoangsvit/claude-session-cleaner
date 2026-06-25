@@ -155,11 +155,43 @@ npm install --global claude-cleaner
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for full setup, build, and release instructions.
 
-Quick reference:
+### Requirements
+
+- [Go 1.22+](https://go.dev/dl/)
+- [Node.js 20+](https://nodejs.org/) (only for seed data / demo GIFs)
+
+### Quick start
 
 ```bash
-go mod tidy          # install dependencies
-go build -v ./...    # build
+git clone https://github.com/ePlus-DEV/claude-cleaner.git
+cd claude-cleaner
+go mod tidy
+```
+
+### Run in dev (without installing Claude)
+
+Use the included seed script to create fake session data for testing:
+
+```bash
+# macOS / Linux
+node demo/seed.js /tmp/claude-demo
+go run . --claude-dir /tmp/claude-demo
+```
+
+```powershell
+# Windows
+node demo/seed.js $env:TEMP\claude-demo
+go run . --claude-dir $env:TEMP\claude-demo
+```
+
+This creates 5 fake project sessions of various sizes — enough to test all TUI flows (navigate, select, delete, cancel) without touching any real Claude data.
+
+### Common commands
+
+```bash
+go mod tidy          # install / tidy dependencies
+go build -o claude-cleaner .  # build binary
+go run .             # run without building
 go test -v ./...     # run tests
 go run . --version   # smoke test
 ```

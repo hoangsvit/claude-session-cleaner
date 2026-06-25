@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -58,8 +57,7 @@ var (
 type appState int
 
 const (
-	stateBanner appState = iota
-	stateLoading
+	stateLoading appState = iota
 	stateList
 	stateConfirm
 	stateDeleting
@@ -85,17 +83,17 @@ type deleteDoneMsg struct {
 }
 
 type model struct {
-	state       appState
-	claudeDir   string
-	projectsDir string
-	sessions    []Session
-	selected    map[int]bool
-	cursor      int
-	spinner     spinner.Model
-	input       textinput.Model
-	deleted     []string
-	failed      []string
-	width       int
+	state        appState
+	claudeDir    string
+	projectsDir  string
+	sessions     []Session
+	selected     map[int]bool
+	cursor       int
+	spinner      spinner.Model
+	confirmIdx   int // 0 = No (default), 1 = Yes
+	deleted      []string
+	failed       []string
+	width        int
 }
 
 func newModel(claudeDir, projectsDir string) model {
@@ -103,23 +101,23 @@ func newModel(claudeDir, projectsDir string) model {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(clrPurple)
 
-	ti := textinput.New()
-	ti.Placeholder = "DELETE"
-	ti.CharLimit = 10
-	ti.Width = 20
-
 	return model{
-		state:       stateBanner,
+		state:       stateLoading,
 		claudeDir:   claudeDir,
 		projectsDir: projectsDir,
 		selected:    make(map[int]bool),
 		spinner:     sp,
-		input:       ti,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return nil // scanning deferred until Enter pressed in banner
+	return tea.Batch(
+		m.spinner.Tick,
+		func() tea.Msg {
+			sessions, err := scanSessions(m.projectsDir)
+			return sessionsLoadedMsg{sessions, err}
+		},
+	)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -132,9 +130,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
-		}
-		if m.state == stateBanner {
-			return m.handleBannerKey(msg)
 		}
 		if m.state == stateConfirm {
 			return m.handleConfirmKey(msg)
@@ -161,12 +156,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Forward non-key messages to textinput while in confirm state
-	if m.state == stateConfirm {
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		return m, cmd
-	}
 
 	return m, nil
 }
@@ -195,15 +184,15 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "a":
-		anyOn := false
-		for _, v := range m.selected {
-			if v {
-				anyOn = true
+		allOn := n > 0
+		for _, s := range m.sessions {
+			if !m.selected[s.Index] {
+				allOn = false
 				break
 			}
 		}
 		for _, s := range m.sessions {
-			m.selected[s.Index] = !anyOn
+			m.selected[s.Index] = !allOn
 		}
 
 	case "enter":
@@ -215,8 +204,8 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if count > 0 {
 			m.state = stateConfirm
-			m.input.Focus()
-			return m, textinput.Blink
+			m.confirmIdx = 0
+			return m, nil
 		}
 	}
 
@@ -224,68 +213,58 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc:
-		m.state = stateList
-		m.input.SetValue("")
-		m.input.Blur()
-		return m, nil
-
-	case tea.KeyEnter:
-		if m.input.Value() == "DELETE" {
-			m.state = stateDeleting
-			m.input.SetValue("")
-			return m, tea.Batch(
-				m.spinner.Tick,
-				func() tea.Msg {
-					var deleted, failed []string
-					for _, s := range m.sessions {
-						if !m.selected[s.Index] {
-							continue
-						}
-						if err := safeRemove(m.projectsDir, s.Path); err != nil {
-							failed = append(failed, s.Name)
-						} else {
-							deleted = append(deleted, s.Name)
-						}
-					}
-					return deleteDoneMsg{deleted, failed}
-				},
-			)
-		}
-		m.input.SetValue("")
-		return m, nil
-	}
-
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	return m, cmd
-}
-
-func (m model) handleBannerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "q":
-		return m, tea.Quit
-	case "enter", " ":
-		m.state = stateLoading
-		return m, tea.Batch(
-			m.spinner.Tick,
-			func() tea.Msg {
-				sessions, err := scanSessions(m.projectsDir)
-				return sessionsLoadedMsg{sessions, err}
-			},
-		)
+	case "esc", "q", "n":
+		m.state = stateList
+		m.confirmIdx = 0
+		return m, nil
+
+	case "left", "h", "tab":
+		m.confirmIdx = 0
+		return m, nil
+
+	case "right", "l":
+		m.confirmIdx = 1
+		return m, nil
+
+	case "y":
+		m.confirmIdx = 1
+		return m.doDelete()
+
+	case "enter":
+		if m.confirmIdx == 1 {
+			return m.doDelete()
+		}
+		m.state = stateList
+		m.confirmIdx = 0
+		return m, nil
 	}
 	return m, nil
 }
 
-func (m model) View() string {
-	if m.state == stateBanner {
-		return m.viewBanner()
-	}
+func (m model) doDelete() (tea.Model, tea.Cmd) {
+	m.state = stateDeleting
+	return m, tea.Batch(
+		m.spinner.Tick,
+		func() tea.Msg {
+			var deleted, failed []string
+			for _, s := range m.sessions {
+				if !m.selected[s.Index] {
+					continue
+				}
+				if err := safeRemove(m.projectsDir, s.Path); err != nil {
+					failed = append(failed, s.Name)
+				} else {
+					deleted = append(deleted, s.Name)
+				}
+			}
+			return deleteDoneMsg{deleted, failed}
+		},
+	)
+}
 
-	header := titleStyle.Render("  Claude Cleaner  ·  ePlus.DEV  ") + "\n" +
-		dimStyle.Render("  "+m.claudeDir) + "\n"
+func (m model) View() string {
+	header := m.renderHeader()
 
 	var body string
 	switch m.state {
@@ -404,8 +383,24 @@ func (m model) viewConfirm() string {
 
 	sb.WriteString(fmt.Sprintf("\n  Total: %s\n\n", sizeStyle.Render(formatSize(total))))
 	sb.WriteString("  " + dimStyle.Render("Deletes session history only. Source code is NOT affected.") + "\n\n")
-	sb.WriteString("  " + m.input.View() + "\n\n")
-	sb.WriteString("  " + dimStyle.Render("enter confirm  esc back"))
+
+	noStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Padding(0, 3)
+	yesStyle := noStyle
+
+	if m.confirmIdx == 0 {
+		noStyle = noStyle.BorderForeground(clrPurple).Foreground(clrFg).Bold(true)
+		yesStyle = yesStyle.BorderForeground(clrComment).Foreground(clrComment)
+	} else {
+		noStyle = noStyle.BorderForeground(clrComment).Foreground(clrComment)
+		yesStyle = yesStyle.BorderForeground(clrRed).Foreground(clrRed).Bold(true)
+	}
+
+	btnNo := noStyle.Render("✗  No, cancel")
+	btnYes := yesStyle.Render("✓  Yes, delete")
+	sb.WriteString("  " + lipgloss.JoinHorizontal(lipgloss.Center, btnNo, "   ", btnYes) + "\n\n")
+	sb.WriteString("  " + dimStyle.Render("←/→ select  enter confirm  esc back"))
 
 	return sb.String()
 }
@@ -431,69 +426,31 @@ func (m model) viewDone() string {
 	return sb.String()
 }
 
-func buildColorPalette() string {
-	colors := []lipgloss.Color{
-		"#282A36", "#44475A", "#FF5555", "#FFB86C",
-		"#F1FA8C", "#50FA7B", "#8BE9FD", "#BD93F9",
-	}
-	var blocks []string
-	for _, c := range colors {
-		blocks = append(blocks, lipgloss.NewStyle().Background(c).Foreground(c).Render("███"))
-	}
-	return strings.Join(blocks, "")
-}
+func (m model) renderHeader() string {
+	logoLines := strings.Split(bannerLogo, "\n")
+	art := strings.Join(logoLines[:6], "\n")
+	sub := logoLines[6]
 
-func (m model) buildInfoPanel() string {
+	logo := lipgloss.NewStyle().Foreground(clrPurple).Render(art) + "\n" +
+		lipgloss.NewStyle().Foreground(clrCyan).Bold(true).Render(sub)
+	logoPanel := lipgloss.NewStyle().Padding(0, 1).Render(logo)
+
+	lw := 10
+	label := func(s string) string {
+		return lipgloss.NewStyle().Foreground(clrCyan).Bold(true).Width(lw).Render(s + ":")
+	}
 	title := lipgloss.NewStyle().Foreground(clrPurple).Bold(true).Render("ePlus.DEV") +
 		lipgloss.NewStyle().Foreground(clrFg).Render("/claude-cleaner")
-	divider := lipgloss.NewStyle().Foreground(clrPurple).Render(strings.Repeat("─", 38))
+	divider := lipgloss.NewStyle().Foreground(clrPurple).Render(strings.Repeat("─", 36))
+	dirLine := label("Dir") + lipgloss.NewStyle().Foreground(clrFg).Render(m.claudeDir)
+	statusLine := label("Status") + lipgloss.NewStyle().Foreground(clrGreen).Bold(true).Render("● Ready")
+	verLine := label("Version") + lipgloss.NewStyle().Foreground(clrComment).Render(version)
 
-	type row struct{ k, v, color string }
-	rows := []row{
-		{"App", "Claude Cleaner", ""},
-		{"Author", "ePlus.DEV", ""},
-		{"GitHub", "github.com/ePlus-DEV/claude-cleaner", string(clrCyan)},
-		{"Built with", "Bubble Tea + Lip Gloss", ""},
-		{"Mode", "Interactive CLI", ""},
-		{"Status", "● Ready", string(clrGreen)},
-		{"Version", version, string(clrComment)},
+	info := strings.Join([]string{title, divider, dirLine, statusLine, verLine}, "\n")
+	infoPanel := lipgloss.NewStyle().Padding(0, 2).Render(info)
+
+	if m.width > 0 && m.width < 90 {
+		return lipgloss.JoinVertical(lipgloss.Left, logoPanel, infoPanel) + "\n"
 	}
-
-	lw := 13
-	lines := []string{title, divider, ""}
-	for _, r := range rows {
-		label := lipgloss.NewStyle().Foreground(clrCyan).Bold(true).Width(lw).Render(r.k + ":")
-		vc := clrFg
-		if r.color != "" {
-			vc = lipgloss.Color(r.color)
-		}
-		val := lipgloss.NewStyle().Foreground(vc).Render(r.v)
-		lines = append(lines, label+val)
-	}
-
-	lines = append(lines, "", buildColorPalette())
-	return strings.Join(lines, "\n")
-}
-
-func (m model) viewBanner() string {
-	lines := strings.Split(bannerLogo, "\n")
-	mainArt := strings.Join(lines[:6], "\n")
-	subtitle := lines[6]
-
-	logo := lipgloss.NewStyle().Foreground(clrPurple).Render(mainArt) + "\n" +
-		lipgloss.NewStyle().Foreground(clrCyan).Bold(true).Render(subtitle)
-	logoPanel := lipgloss.NewStyle().Padding(1, 2).Render(logo)
-	infoPanel := lipgloss.NewStyle().Padding(1, 2).Render(m.buildInfoPanel())
-
-	var content string
-	if m.width > 0 && m.width < 82 {
-		content = lipgloss.JoinVertical(lipgloss.Left, logoPanel, infoPanel)
-	} else {
-		content = lipgloss.JoinHorizontal(lipgloss.Top, logoPanel, infoPanel)
-	}
-
-	hint := lipgloss.NewStyle().Foreground(clrComment).
-		Render("  Press Enter to start cleaning, or q to quit.")
-
-	return "\n" + content + "\n" + hint + "\n"
+	return lipgloss.JoinHorizontal(lipgloss.Top, logoPanel, infoPanel) + "\n"
 }
