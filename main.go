@@ -13,7 +13,7 @@ import (
 var version = "2.0.0"
 
 func printHelp() {
-	fmt.Printf(`Claude Session Cleaner v%s  —  ePlus.DEV
+	fmt.Printf(`Claude Cleaner v%s  —  ePlus.DEV
 
 Interactive TUI to safely delete selected Claude Code project session logs.
 

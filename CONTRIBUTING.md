@@ -1,4 +1,4 @@
-# Contributing to Claude Session Cleaner
+# Contributing to Claude Cleaner
 
 Thank you for your interest in contributing!
 

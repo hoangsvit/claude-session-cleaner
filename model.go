@@ -22,9 +22,14 @@ var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(clrPurple).
+			Background(clrBg).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(clrPurple).
 			Padding(0, 2)
+
+	clrBg         = lipgloss.Color("#282A36")
+	clrSelection  = lipgloss.Color("#44475A")
+	clrCursor     = lipgloss.Color("#6272A4")
 
 	dimStyle      = lipgloss.NewStyle().Foreground(clrComment)
 	nameStyle     = lipgloss.NewStyle().Foreground(clrFg)
@@ -36,6 +41,10 @@ var (
 	dangerStyle   = lipgloss.NewStyle().Foreground(clrRed).Bold(true)
 	successStyle  = lipgloss.NewStyle().Foreground(clrGreen).Bold(true)
 	countStyle    = lipgloss.NewStyle().Foreground(clrGreen).Bold(true)
+
+	rowNormalStyle   = lipgloss.NewStyle().Background(clrBg)
+	rowCursorStyle   = lipgloss.NewStyle().Background(clrCursor)
+	rowSelectedStyle = lipgloss.NewStyle().Background(clrSelection)
 
 	helpStyle = lipgloss.NewStyle().
 			Foreground(clrComment).
@@ -49,12 +58,21 @@ var (
 type appState int
 
 const (
-	stateLoading appState = iota
+	stateBanner appState = iota
+	stateLoading
 	stateList
 	stateConfirm
 	stateDeleting
 	stateDone
 )
+
+const bannerLogo = ` ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗
+██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝
+██║     ██║     ███████║██║   ██║██║  ██║█████╗
+██║     ██║     ██╔══██║██║   ██║██║  ██║██╔══╝
+╚██████╗███████╗██║  ██║╚██████╔╝██████╔╝███████╗
+ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝╚══════╝
+           C  L  E  A  N  E  R`
 
 type sessionsLoadedMsg struct {
 	sessions []Session
@@ -91,7 +109,7 @@ func newModel(claudeDir, projectsDir string) model {
 	ti.Width = 20
 
 	return model{
-		state:       stateLoading,
+		state:       stateBanner,
 		claudeDir:   claudeDir,
 		projectsDir: projectsDir,
 		selected:    make(map[int]bool),
@@ -101,13 +119,7 @@ func newModel(claudeDir, projectsDir string) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(
-		m.spinner.Tick,
-		func() tea.Msg {
-			sessions, err := scanSessions(m.projectsDir)
-			return sessionsLoadedMsg{sessions, err}
-		},
-	)
+	return nil // scanning deferred until Enter pressed in banner
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -120,6 +132,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
+		}
+		if m.state == stateBanner {
+			return m.handleBannerKey(msg)
 		}
 		if m.state == stateConfirm {
 			return m.handleConfirmKey(msg)
@@ -247,8 +262,29 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m model) handleBannerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q":
+		return m, tea.Quit
+	case "enter", " ":
+		m.state = stateLoading
+		return m, tea.Batch(
+			m.spinner.Tick,
+			func() tea.Msg {
+				sessions, err := scanSessions(m.projectsDir)
+				return sessionsLoadedMsg{sessions, err}
+			},
+		)
+	}
+	return m, nil
+}
+
 func (m model) View() string {
-	header := titleStyle.Render("  Claude Session Cleaner  ·  ePlus.DEV  ") + "\n" +
+	if m.state == stateBanner {
+		return m.viewBanner()
+	}
+
+	header := titleStyle.Render("  Claude Cleaner  ·  ePlus.DEV  ") + "\n" +
 		dimStyle.Render("  "+m.claudeDir) + "\n"
 
 	var body string
@@ -291,22 +327,45 @@ func (m model) viewList() string {
 	)) + "\n")
 	sb.WriteString(dimStyle.Render("  "+strings.Repeat("─", nameW+timeW+sizeW+12)) + "\n")
 
+	rowW := m.width
+	if rowW < 80 {
+		rowW = 80
+	}
+
 	for _, s := range m.sessions {
-		cur := "  "
-		if m.cursor == s.Index-1 {
-			cur = cursorStyle.Render("▶ ")
+		isCursor := m.cursor == s.Index-1
+		isSelected := m.selected[s.Index]
+
+		var bg lipgloss.Color
+		var rowStyle lipgloss.Style
+		switch {
+		case isCursor:
+			bg = clrCursor
+			rowStyle = rowCursorStyle
+		case isSelected:
+			bg = clrSelection
+			rowStyle = rowSelectedStyle
+		default:
+			bg = clrBg
+			rowStyle = rowNormalStyle
 		}
 
-		check := checkOffStyle.Render("[ ]")
-		if m.selected[s.Index] {
-			check = checkOnStyle.Render("[✓]")
+		cur := lipgloss.NewStyle().Background(bg).Render("  ")
+		if isCursor {
+			cur = lipgloss.NewStyle().Foreground(clrPurple).Background(bg).Bold(true).Render("▶ ")
 		}
 
-		name := nameStyle.Width(nameW).Render(truncate(s.Name, nameW))
-		t := timeStyle.Width(timeW).Render(humanTime(s.Modified))
-		sz := sizeStyle.Render(formatSize(s.Size))
+		check := lipgloss.NewStyle().Foreground(clrComment).Background(bg).Render("[ ]")
+		if isSelected {
+			check = lipgloss.NewStyle().Foreground(clrGreen).Background(bg).Bold(true).Render("[✓]")
+		}
 
-		sb.WriteString(cur + check + "  " + name + "  " + t + "  " + sz + "\n")
+		name := lipgloss.NewStyle().Foreground(clrFg).Background(bg).Width(nameW).Render(truncate(s.Name, nameW))
+		t := lipgloss.NewStyle().Foreground(clrComment).Background(bg).Width(timeW).Render(humanTime(s.Modified))
+		sz := lipgloss.NewStyle().Foreground(clrCyan).Background(bg).Render(formatSize(s.Size))
+
+		content := cur + check + "  " + name + "  " + t + "  " + sz
+		sb.WriteString(rowStyle.Width(rowW).Render(content) + "\n")
 	}
 
 	selected := 0
@@ -370,4 +429,71 @@ func (m model) viewDone() string {
 	sb.WriteString("\n  " + dimStyle.Render("press enter or q to exit"))
 
 	return sb.String()
+}
+
+func buildColorPalette() string {
+	colors := []lipgloss.Color{
+		"#282A36", "#44475A", "#FF5555", "#FFB86C",
+		"#F1FA8C", "#50FA7B", "#8BE9FD", "#BD93F9",
+	}
+	var blocks []string
+	for _, c := range colors {
+		blocks = append(blocks, lipgloss.NewStyle().Background(c).Foreground(c).Render("███"))
+	}
+	return strings.Join(blocks, "")
+}
+
+func (m model) buildInfoPanel() string {
+	title := lipgloss.NewStyle().Foreground(clrPurple).Bold(true).Render("ePlus.DEV") +
+		lipgloss.NewStyle().Foreground(clrFg).Render("/claude-cleaner")
+	divider := lipgloss.NewStyle().Foreground(clrPurple).Render(strings.Repeat("─", 38))
+
+	type row struct{ k, v, color string }
+	rows := []row{
+		{"App", "Claude Cleaner", ""},
+		{"Author", "ePlus.DEV", ""},
+		{"GitHub", "github.com/ePlus-DEV/claude-cleaner", string(clrCyan)},
+		{"Built with", "Bubble Tea + Lip Gloss", ""},
+		{"Mode", "Interactive CLI", ""},
+		{"Status", "● Ready", string(clrGreen)},
+		{"Version", version, string(clrComment)},
+	}
+
+	lw := 13
+	lines := []string{title, divider, ""}
+	for _, r := range rows {
+		label := lipgloss.NewStyle().Foreground(clrCyan).Bold(true).Width(lw).Render(r.k + ":")
+		vc := clrFg
+		if r.color != "" {
+			vc = lipgloss.Color(r.color)
+		}
+		val := lipgloss.NewStyle().Foreground(vc).Render(r.v)
+		lines = append(lines, label+val)
+	}
+
+	lines = append(lines, "", buildColorPalette())
+	return strings.Join(lines, "\n")
+}
+
+func (m model) viewBanner() string {
+	lines := strings.Split(bannerLogo, "\n")
+	mainArt := strings.Join(lines[:6], "\n")
+	subtitle := lines[6]
+
+	logo := lipgloss.NewStyle().Foreground(clrPurple).Render(mainArt) + "\n" +
+		lipgloss.NewStyle().Foreground(clrCyan).Bold(true).Render(subtitle)
+	logoPanel := lipgloss.NewStyle().Padding(1, 2).Render(logo)
+	infoPanel := lipgloss.NewStyle().Padding(1, 2).Render(m.buildInfoPanel())
+
+	var content string
+	if m.width > 0 && m.width < 82 {
+		content = lipgloss.JoinVertical(lipgloss.Left, logoPanel, infoPanel)
+	} else {
+		content = lipgloss.JoinHorizontal(lipgloss.Top, logoPanel, infoPanel)
+	}
+
+	hint := lipgloss.NewStyle().Foreground(clrComment).
+		Render("  Press Enter to start cleaning, or q to quit.")
+
+	return "\n" + content + "\n" + hint + "\n"
 }
