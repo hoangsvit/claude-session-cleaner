@@ -14,6 +14,11 @@ jobs:
   test:
     name: Go ${{ matrix.go }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      # macOS 15's dyld rejects Go 1.22's internally linked test binaries
+      # because they can miss LC_UUID. Use the external linker on macOS so
+      # test and go-run binaries include the load command dyld expects.
+      GOFLAGS: ${{ runner.os == 'macOS' && '-ldflags=-linkmode=external' || '' }}
     strategy:
       fail-fast: false
       matrix:
