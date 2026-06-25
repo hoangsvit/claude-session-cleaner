@@ -148,6 +148,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.deleted = msg.deleted
 		m.failed = msg.failed
 		m.state = stateDone
+		m.selected = make(map[int]bool)
 		return m, nil
 
 	case spinner.TickMsg:
@@ -196,6 +197,9 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "enter":
+		if m.state == stateDone {
+			return m, tea.Quit
+		}
 		count := 0
 		for _, v := range m.selected {
 			if v {
