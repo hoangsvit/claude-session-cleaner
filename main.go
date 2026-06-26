@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-var version = "1.0.0"
+var version = "1.0.1"
 
 func printHelp() {
 	fmt.Printf(`Claude Cleaner v%s  —  ePlus.DEV
