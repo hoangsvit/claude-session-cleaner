@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -1201,7 +1202,7 @@ func (m model) viewList() string {
 
 		displayName := s.Name
 		if s.ProjectPath != "" {
-			displayName = s.ProjectPath
+			displayName = filepath.Base(s.ProjectPath)
 		}
 
 		nameFg := clrFg
@@ -1293,7 +1294,7 @@ func (m model) viewConfirm() string {
 		}
 		displayName := s.Name
 		if s.ProjectPath != "" {
-			displayName = s.ProjectPath
+			displayName = filepath.Base(s.ProjectPath)
 		}
 		tokLabel := "—"
 		if s.HasTokenData {
