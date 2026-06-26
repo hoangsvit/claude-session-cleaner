@@ -14,6 +14,8 @@ Runs on Windows, macOS, and Linux. No runtime required when using a pre-built bi
 
 ![Full demo](demo/full.gif)
 
+> See [SCREENSHOTS.md](SCREENSHOTS.md) for all scenario walkthroughs.
+
 ## Install
 
 ### Run without installing
@@ -133,18 +135,6 @@ claude-cleaner
 $env:CLAUDE_CONFIG_DIR = "D:\ClaudeData"
 claude-cleaner
 ```
-
-## Demos
-
-![Screenshot](demo/screenshot.png)
-
-| Scenario | Preview |
-| --- | --- |
-| `--help` | ![Help](demo/help.gif) |
-| Delete a session | ![Full flow](demo/full.gif) |
-| Cancel confirmation | ![Cancel](demo/cancel.gif) |
-| In-place update | ![Update](demo/update.gif) |
-| Search, sort, filter, category | ![Features](demo/features.gif) |
 
 ## Troubleshooting
 
