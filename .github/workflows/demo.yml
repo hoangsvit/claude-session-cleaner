@@ -74,6 +74,7 @@ jobs:
           vhs demo/full.tape
           vhs demo/cancel.tape
           vhs demo/update.tape
+          vhs demo/features.tape
           vhs demo/screenshot.tape
 
       # On PRs: upload as artifact for preview — cannot commit to fork branches
@@ -137,13 +138,13 @@ jobs:
           full_markdown="$(publish_markdown demo/full.gif)"
           cancel_markdown="$(publish_markdown demo/cancel.gif)"
           update_markdown="$(publish_markdown demo/update.gif)"
-          screenshot_markdown="$(publish_markdown demo/screenshot.gif)"
+          features_markdown="$(publish_markdown demo/features.gif)"
 
           set_output help "$help_markdown"
           set_output full "$full_markdown"
           set_output cancel "$cancel_markdown"
           set_output update "$update_markdown"
-          set_output screenshot "$screenshot_markdown"
+          set_output features "$features_markdown"
 
       - name: Comment demo GIF preview on PR
         if: github.event_name == 'pull_request'
@@ -153,7 +154,8 @@ jobs:
           FULL_GIF: ${{ steps.publish-gifs.outputs.full }}
           CANCEL_GIF: ${{ steps.publish-gifs.outputs.cancel }}
           UPDATE_GIF: ${{ steps.publish-gifs.outputs.update }}
-          SCREENSHOT_GIF: ${{ steps.publish-gifs.outputs.screenshot }}
+          FEATURES_GIF: ${{ steps.publish-gifs.outputs.features }}
+          ARTIFACT_URL: ${{ steps.upload-gifs.outputs.artifact-url }}
         with:
           script: |
             const marker = '<!-- claude-cleaner-demo-gifs -->';
@@ -164,7 +166,10 @@ jobs:
               'The newest generated terminal GIFs for this pull request are shown below:',
               '',
               '### Screenshot',
-              process.env.SCREENSHOT_GIF,
+              `[Download screenshot.png](${process.env.ARTIFACT_URL})`,
+              '',
+              '### Search, sort, filter, category',
+              process.env.FEATURES_GIF,
               '',
               '### Help',
               process.env.HELP_GIF,

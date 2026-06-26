@@ -1,5 +1,4 @@
 Output demo/screenshot.png
-Output demo/screenshot.gif
 
 Set Theme "Dracula"
 Set FontSize 16
