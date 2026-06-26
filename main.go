@@ -27,16 +27,21 @@ Usage:
 
 Options:
   --claude-dir <path>   Custom Claude config directory (default: ~/.claude)
+  --mock-update         Simulate a newer version available (for testing)
   -h, --help            Show help
   -v, --version         Show version
 
 Key bindings:
-  ↑/↓ or j/k   Navigate
+  ↑/↓ or j/k   Navigate list
   space         Toggle selection
   a             Select / deselect all
-  enter         Confirm selection
-  esc           Go back
-  q / ctrl+c    Quit
+  enter         Confirm — show delete screen (when items selected)
+  p             Purge selected (confirm screen)
+  x             Force-purge item at cursor — no confirm
+  r             Rescan / refresh project list
+  u             Update claude-cleaner in-place (when update available)
+  esc           Go back / cancel
+  q / ctrl+c    Quit (any screen)
 
 Safety:
   Only session folders inside ~/.claude/projects are deleted.
