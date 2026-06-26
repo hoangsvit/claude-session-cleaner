@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,9 +30,9 @@ var (
 			BorderForeground(clrPurple).
 			Padding(0, 2)
 
-	clrBg         = lipgloss.Color("#282A36")
-	clrSelection  = lipgloss.Color("#44475A")
-	clrCursor     = lipgloss.Color("#6272A4")
+	clrBg        = lipgloss.Color("#282A36")
+	clrSelection = lipgloss.Color("#44475A")
+	clrCursor    = lipgloss.Color("#6272A4")
 
 	dimStyle      = lipgloss.NewStyle().Foreground(clrComment)
 	nameStyle     = lipgloss.NewStyle().Foreground(clrFg)
@@ -56,6 +58,51 @@ var (
 			PaddingTop(1)
 )
 
+// ── Sort / filter modes ──────────────────────────────────────────────────────
+
+type sortMode int
+
+const (
+	sortRecent sortMode = iota
+	sortSize
+	sortTokens
+	sortName
+)
+
+func (s sortMode) label() string {
+	switch s {
+	case sortSize:
+		return "size ↓"
+	case sortTokens:
+		return "tokens ↓"
+	case sortName:
+		return "name A–Z"
+	default:
+		return "recent"
+	}
+}
+
+type filterMode int
+
+const (
+	filterAll filterMode = iota
+	filterHasData
+	filterOrphaned
+)
+
+func (f filterMode) label() string {
+	switch f {
+	case filterHasData:
+		return "has data"
+	case filterOrphaned:
+		return "orphaned"
+	default:
+		return "all"
+	}
+}
+
+// ── App state ────────────────────────────────────────────────────────────────
+
 type appState int
 
 const (
@@ -66,6 +113,8 @@ const (
 	stateConfirm
 	stateDeleting
 	stateDone
+	stateCategories
+	stateCategoryConfirm
 )
 
 const bannerLogo = ` ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗
@@ -75,6 +124,8 @@ const bannerLogo = ` ██████╗██╗      █████╗ █�
 ╚██████╗███████╗██║  ██║╚██████╔╝██████╔╝███████╗
  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝╚══════╝
            C  L  E  A  N  E  R`
+
+// ── Messages ─────────────────────────────────────────────────────────────────
 
 type sessionsLoadedMsg struct {
 	sessions []Session
@@ -106,6 +157,15 @@ type deleteItemMsg struct {
 	nextIdx int
 }
 
+type categoriesLoadedMsg struct{ categories []Category }
+
+type categoryCleanDoneMsg struct {
+	cleaned []string
+	failed  []string
+}
+
+// ── Model ────────────────────────────────────────────────────────────────────
+
 type model struct {
 	state          appState
 	claudeDir      string
@@ -116,25 +176,44 @@ type model struct {
 	cursor         int
 	spinner        spinner.Model
 	confirmIdx     int  // 0 = No (default), 1 = Yes
-	purgeMode      bool // true = full purge via claude CLI, false = session files only
+	purgeMode      bool // true = full purge via claude CLI
 	deleted        []string
 	failed         []string
 	width          int
 	deleteTotal        int
 	deleteProgress     int
 	deleteSelectedSnap map[int]bool
-	claudeCLIVersion   string // "" = not yet detected
+	claudeCLIVersion   string
 	claudeCLIDetected  bool
-	latestVersion        string
-	hasUpdate            bool
-	updateChecked        bool
-	pendingUpdatePrompt  bool   // update arrived before sessions loaded
-	sessionsReady        bool   // sessions loaded flag
-	lastScanTime         time.Time
-	rescanning           bool   // manual rescan in progress — keep list visible
-	skipUpdateCheck      bool   // true when --mock-update; ignore real npm check
-	updatePromptIdx      int    // 0 = Yes (default), 1 = No
-	restartAfterUpdate   bool
+	latestVersion       string
+	hasUpdate           bool
+	updateChecked       bool
+	pendingUpdatePrompt bool
+	sessionsReady       bool
+	lastScanTime        time.Time
+	rescanning          bool
+	skipUpdateCheck     bool
+	updatePromptIdx     int
+	restartAfterUpdate  bool
+
+	// sort / filter / search / help
+	sortMode    sortMode
+	filterMode  filterMode
+	searchQuery string
+	searching   bool
+	showHelp    bool
+
+	// expiry threshold (0 = no filter)
+	expiryDays int
+	expiryIdx  int // index into expiryOptions
+
+	// category cleanup
+	categories       []Category
+	categorySelected map[string]bool
+	categoryCursor   int
+	categoryMode     bool // true when done screen shows category cleanup result
+
+	dryRun bool // --dry-run: simulate deletions without touching files
 }
 
 func newModel(claudeDir, claudeJSONPath, projectsDir string) model {
@@ -143,16 +222,74 @@ func newModel(claudeDir, claudeJSONPath, projectsDir string) model {
 	sp.Style = lipgloss.NewStyle().Foreground(clrPurple)
 
 	return model{
-		state:          stateLoading,
-		claudeDir:      claudeDir,
-		claudeJSONPath: claudeJSONPath,
-		projectsDir:    projectsDir,
-		selected:       make(map[int]bool),
-		spinner:        sp,
+		state:            stateLoading,
+		claudeDir:        claudeDir,
+		claudeJSONPath:   claudeJSONPath,
+		projectsDir:      projectsDir,
+		selected:         make(map[int]bool),
+		categorySelected: make(map[string]bool),
+		spinner:          sp,
 	}
 }
 
+// filteredSessions returns sessions after applying filter, search, and sort.
+func (m model) filteredSessions() []Session {
+	result := make([]Session, 0, len(m.sessions))
+	q := strings.ToLower(m.searchQuery)
+
+	for _, s := range m.sessions {
+		switch m.filterMode {
+		case filterHasData:
+			if !s.HasData {
+				continue
+			}
+		case filterOrphaned:
+			if s.HasData {
+				continue
+			}
+		}
+		if q != "" {
+			name := strings.ToLower(s.Name)
+			path := strings.ToLower(s.ProjectPath)
+			if !strings.Contains(name, q) && !strings.Contains(path, q) {
+				continue
+			}
+		}
+		if m.expiryDays > 0 && s.HasData {
+			cutoff := time.Now().AddDate(0, 0, -m.expiryDays)
+			if s.Modified.After(cutoff) {
+				continue // too recent
+			}
+		}
+		result = append(result, s)
+	}
+
+	switch m.sortMode {
+	case sortSize:
+		sort.Slice(result, func(i, j int) bool { return result[i].Size > result[j].Size })
+	case sortTokens:
+		sort.Slice(result, func(i, j int) bool { return result[i].TotalTokens > result[j].TotalTokens })
+	case sortName:
+		sort.Slice(result, func(i, j int) bool {
+			ni := result[i].ProjectPath
+			if ni == "" {
+				ni = result[i].Name
+			}
+			nj := result[j].ProjectPath
+			if nj == "" {
+				nj = result[j].Name
+			}
+			return strings.ToLower(ni) < strings.ToLower(nj)
+		})
+	}
+
+	return result
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+
 func (m model) Init() tea.Cmd {
+	claudeDir := m.claudeDir
 	return tea.Batch(
 		m.spinner.Tick,
 		func() tea.Msg {
@@ -166,8 +303,13 @@ func (m model) Init() tea.Cmd {
 			latest, hasUpdate := CheckLatestVersion(version)
 			return updateCheckMsg{latest, hasUpdate}
 		},
+		func() tea.Msg {
+			return categoriesLoadedMsg{scanCategories(claudeDir)}
+		},
 	)
 }
+
+// ── Update ───────────────────────────────────────────────────────────────────
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -178,6 +320,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC || msg.String() == "q" {
+			if m.searching {
+				// q inside search = add to query
+				break
+			}
+			m.persistPrefs()
 			return m, tea.Quit
 		}
 		if m.state == stateUpdatePrompt {
@@ -185,6 +332,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.state == stateConfirm {
 			return m.handleConfirmKey(msg)
+		}
+		if m.state == stateCategories {
+			return m.handleCategoryKey(msg)
+		}
+		if m.state == stateCategoryConfirm {
+			return m.handleCategoryConfirmKey(msg)
 		}
 		return m.handleListKey(msg)
 
@@ -198,7 +351,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rescanning = false
 		m.lastScanTime = time.Now()
 		if wasRescanning {
-			// manual rescan: reset cursor/selection, go straight to list
 			m.cursor = 0
 			m.selected = make(map[int]bool)
 			m.state = stateList
@@ -235,7 +387,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateCheckMsg:
 		if m.skipUpdateCheck {
-			return m, nil // mock mode — ignore real npm check
+			return m, nil
 		}
 		m.latestVersion = msg.latest
 		m.hasUpdate = msg.hasUpdate
@@ -255,9 +407,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 
+	case categoriesLoadedMsg:
+		m.categories = msg.categories
+		return m, nil
+
+	case categoryCleanDoneMsg:
+		m.deleted = msg.cleaned
+		m.failed = msg.failed
+		m.categoryMode = true
+		m.state = stateDone
+		m.categorySelected = make(map[string]bool)
+		return m, nil
+
 	case deleteDoneMsg:
 		m.deleted = msg.deleted
 		m.failed = msg.failed
+		m.categoryMode = false
 		m.state = stateDone
 		m.selected = make(map[int]bool)
 		m.deleteSelectedSnap = nil
@@ -272,16 +437,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-
 	return m, nil
 }
+
+// ── Key handlers ─────────────────────────────────────────────────────────────
 
 func (m model) handleUpdatePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "left", "h", "tab":
-		m.updatePromptIdx = 0 // Yes
+		m.updatePromptIdx = 0
 	case "right", "l":
-		m.updatePromptIdx = 1 // No
+		m.updatePromptIdx = 1
 	case "y", "Y":
 		m.updatePromptIdx = 0
 		return m.doUpdate()
@@ -307,7 +473,7 @@ func (m model) doUpdate() (tea.Model, tea.Cmd) {
 		m.spinner.Tick,
 		func() tea.Msg {
 			if isMock {
-				time.Sleep(2 * time.Second) // simulate npm install duration
+				time.Sleep(2 * time.Second)
 				return updateDoneMsg{nil}
 			}
 			prepareWindowsUpdate()
@@ -317,55 +483,141 @@ func (m model) doUpdate() (tea.Model, tea.Cmd) {
 	)
 }
 
-func (m model) viewUpdatePrompt() string {
-	var sb strings.Builder
-	sb.WriteString("\n")
-	sb.WriteString("  " + lipgloss.NewStyle().Foreground(clrGreen).Bold(true).Render("⬆  New version available: v"+m.latestVersion) + "\n\n")
-	sb.WriteString("  " + dimStyle.Render("Current: v"+version) + "\n\n")
-	sb.WriteString("  Update now via " + lipgloss.NewStyle().Foreground(clrCyan).Render("npm install -g claude-cleaner@latest") + "?\n\n")
-
-	yes := dimStyle.Render("[ Y ]  Yes, update now")
-	no := dimStyle.Render("[ N ]  No, skip")
-	if m.updatePromptIdx == 0 {
-		yes = lipgloss.NewStyle().Foreground(clrGreen).Bold(true).Render("[ Y ]  Yes, update now")
-	} else {
-		no = lipgloss.NewStyle().Foreground(clrFg).Bold(true).Render("[ N ]  No, skip")
-	}
-	sb.WriteString("  " + yes + "      " + no + "\n\n")
-	sb.WriteString("  " + dimStyle.Render("←/→ select  enter confirm  y yes  n/esc skip"))
-	return sb.String()
-}
-
 func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	n := len(m.sessions)
+	// Search mode: intercept all printable input
+	if m.searching {
+		switch msg.String() {
+		case "esc":
+			m.searching = false
+			m.searchQuery = ""
+			m.cursor = 0
+		case "enter":
+			m.searching = false
+		case "backspace", "ctrl+h":
+			if len([]rune(m.searchQuery)) > 0 {
+				runes := []rune(m.searchQuery)
+				m.searchQuery = string(runes[:len(runes)-1])
+				m.cursor = 0
+			}
+		default:
+			if len(msg.Runes) > 0 {
+				m.searchQuery += string(msg.Runes)
+				m.cursor = 0
+			}
+		}
+		return m, nil
+	}
+
+	sessions := m.filteredSessions()
+	n := len(sessions)
 
 	switch msg.String() {
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
+		} else if n > 0 {
+			m.cursor = n - 1 // wrap to bottom
 		}
 
 	case "down", "j":
 		if m.cursor < n-1 {
 			m.cursor++
+		} else {
+			m.cursor = 0 // wrap to top
+		}
+
+	case "g":
+		m.cursor = 0
+
+	case "G":
+		if n > 0 {
+			m.cursor = n - 1
+		}
+
+	case "s":
+		m.sortMode = (m.sortMode + 1) % 4
+		m.cursor = 0
+		m.persistPrefs()
+
+	case "f":
+		m.filterMode = (m.filterMode + 1) % 3
+		m.cursor = 0
+		m.persistPrefs()
+
+	case "e":
+		expiryOptions := []int{0, 7, 14, 30, 60, 90}
+		m.expiryIdx = (m.expiryIdx + 1) % len(expiryOptions)
+		m.expiryDays = expiryOptions[m.expiryIdx]
+		m.cursor = 0
+		m.persistPrefs()
+
+	case "c":
+		// Open category cleanup screen; rescan categories on entry
+		claudeDir := m.claudeDir
+		m.state = stateCategories
+		m.categoryCursor = 0
+		return m, tea.Batch(
+			m.spinner.Tick,
+			func() tea.Msg {
+				return categoriesLoadedMsg{scanCategories(claudeDir)}
+			},
+		)
+
+	case "/":
+		m.searching = true
+		m.searchQuery = ""
+		m.cursor = 0
+
+	case "?":
+		m.showHelp = !m.showHelp
+
+	case "esc":
+		if m.searchQuery != "" || m.filterMode != filterAll || m.sortMode != sortRecent {
+			m.searchQuery = ""
+			m.filterMode = filterAll
+			m.sortMode = sortRecent
+			m.cursor = 0
+		} else {
+			m.showHelp = false
 		}
 
 	case "a":
 		allOn := n > 0
-		for _, s := range m.sessions {
+		for _, s := range sessions {
 			if !m.selected[s.Index] {
 				allOn = false
 				break
 			}
 		}
-		for _, s := range m.sessions {
+		for _, s := range sessions {
 			m.selected[s.Index] = !allOn
 		}
 
+	case "n":
+		// Unselect all
+		m.selected = make(map[int]bool)
+
+	case "o":
+		// Select orphaned projects only (○ = no local data)
+		m.selected = make(map[int]bool)
+		for _, s := range m.sessions {
+			if !s.HasData {
+				m.selected[s.Index] = true
+			}
+		}
+
+	case "d":
+		// Reset everything to defaults
+		m.sortMode = sortRecent
+		m.filterMode = filterAll
+		m.searchQuery = ""
+		m.searching = false
+		m.selected = make(map[int]bool)
+		m.cursor = 0
+
 	case " ":
-		// Toggle selection on current row
-		if n > 0 {
-			idx := m.sessions[m.cursor].Index
+		if n > 0 && m.cursor < n {
+			idx := sessions[m.cursor].Index
 			m.selected[idx] = !m.selected[idx]
 		}
 		return m, nil
@@ -374,6 +626,7 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.state == stateDone {
 			m.deleted = nil
 			m.failed = nil
+			m.categoryMode = false
 			return m.doRescan()
 		}
 		count := 0
@@ -386,7 +639,6 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.purgeMode = false
 			m.state = stateConfirm
 			m.confirmIdx = 0
-			return m, nil
 		}
 		return m, nil
 
@@ -401,16 +653,14 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.purgeMode = true
 			m.state = stateConfirm
 			m.confirmIdx = 0
-			return m, nil
 		}
 
 	case "r", "R":
 		return m.doRescan()
 
 	case "x", "X":
-		// Force purge project at cursor — no confirm screen, single project only.
-		if n > 0 {
-			return m.doPurgeDirect(m.sessions[m.cursor])
+		if n > 0 && m.cursor < n {
+			return m.doPurgeDirect(sessions[m.cursor])
 		}
 
 	case "u", "U":
@@ -464,6 +714,151 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// ── Category key handlers ─────────────────────────────────────────────────────
+
+func (m model) handleCategoryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	n := len(m.categories)
+	switch msg.String() {
+	case "up", "k":
+		if m.categoryCursor > 0 {
+			m.categoryCursor--
+		} else if n > 0 {
+			m.categoryCursor = n - 1
+		}
+	case "down", "j":
+		if m.categoryCursor < n-1 {
+			m.categoryCursor++
+		} else {
+			m.categoryCursor = 0
+		}
+	case "g":
+		m.categoryCursor = 0
+	case "G":
+		if n > 0 {
+			m.categoryCursor = n - 1
+		}
+	case " ":
+		if n > 0 && m.categoryCursor < n {
+			cat := m.categories[m.categoryCursor]
+			if cat.Exists {
+				m.categorySelected[cat.Key] = !m.categorySelected[cat.Key]
+			}
+		}
+	case "a":
+		allOn := true
+		for _, cat := range m.categories {
+			if cat.Exists && !m.categorySelected[cat.Key] {
+				allOn = false
+				break
+			}
+		}
+		for _, cat := range m.categories {
+			if cat.Exists {
+				m.categorySelected[cat.Key] = !allOn
+			}
+		}
+	case "n":
+		m.categorySelected = make(map[string]bool)
+	case "enter":
+		count := 0
+		for _, cat := range m.categories {
+			if m.categorySelected[cat.Key] {
+				count++
+			}
+		}
+		if count > 0 {
+			m.state = stateCategoryConfirm
+			m.confirmIdx = 0
+		}
+	case "esc":
+		m.state = stateList
+		m.categorySelected = make(map[string]bool)
+	}
+	return m, nil
+}
+
+func (m model) handleCategoryConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "n":
+		m.state = stateCategories
+		m.confirmIdx = 0
+		return m, nil
+	case "left", "h", "tab":
+		m.confirmIdx = 0
+	case "right", "l":
+		m.confirmIdx = 1
+	case "y":
+		m.confirmIdx = 1
+		return m.doCategoryClean()
+	case "enter":
+		if m.confirmIdx == 1 {
+			return m.doCategoryClean()
+		}
+		m.state = stateCategories
+		m.confirmIdx = 0
+		return m, nil
+	}
+	return m, nil
+}
+
+// ── Category clean action ─────────────────────────────────────────────────────
+
+func (m model) doCategoryClean() (tea.Model, tea.Cmd) {
+	if m.dryRun {
+		var cleaned []string
+		for _, cat := range m.categories {
+			if m.categorySelected[cat.Key] {
+				cleaned = append(cleaned, cat.Label)
+			}
+		}
+		m.categoryMode = true
+		m.state = stateDone
+		m.deleted = cleaned
+		m.failed = nil
+		m.categorySelected = make(map[string]bool)
+		return m, nil
+	}
+
+	m.state = stateDeleting
+	selected := make(map[string]bool, len(m.categorySelected))
+	for k, v := range m.categorySelected {
+		selected[k] = v
+	}
+	cats := make([]Category, len(m.categories))
+	copy(cats, m.categories)
+	claudeDir := m.claudeDir
+
+	return m, tea.Batch(
+		m.spinner.Tick,
+		func() tea.Msg {
+			var cleaned, failed []string
+			for _, cat := range cats {
+				if !selected[cat.Key] {
+					continue
+				}
+				if err := cleanCategory(cat, claudeDir); err != nil {
+					failed = append(failed, cat.Label)
+				} else {
+					cleaned = append(cleaned, cat.Label)
+				}
+			}
+			return categoryCleanDoneMsg{cleaned, failed}
+		},
+	)
+}
+
+// ── Preferences ───────────────────────────────────────────────────────────────
+
+func (m model) persistPrefs() {
+	writePrefs(m.claudeDir, Preferences{
+		SortMode:   int(m.sortMode),
+		FilterMode: int(m.filterMode),
+		ExpiryDays: m.expiryDays,
+	})
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+
 func (m model) doRescan() (tea.Model, tea.Cmd) {
 	m.sessionsReady = false
 	m.pendingUpdatePrompt = false
@@ -471,20 +866,17 @@ func (m model) doRescan() (tea.Model, tea.Cmd) {
 	projectsDir := m.projectsDir
 
 	if m.state == stateList {
-		// Keep list visible, overlay spinner. Bundle with CLI detect so
-		// goroutine takes ~100-200ms (subprocess) — long enough to see.
 		m.rescanning = true
 		return m, tea.Batch(
 			m.spinner.Tick,
 			func() tea.Msg {
 				sessions, err := scanSessions(claudeJSONPath, projectsDir)
-				cliVersion := DetectClaudeCLI() // adds real latency
+				cliVersion := DetectClaudeCLI()
 				return rescanDoneMsg{sessions, err, cliVersion}
 			},
 		)
 	}
 
-	// stateDone or other: full loading screen
 	m.state = stateLoading
 	m.cursor = 0
 	m.selected = make(map[int]bool)
@@ -498,6 +890,28 @@ func (m model) doRescan() (tea.Model, tea.Cmd) {
 }
 
 func (m model) doDelete() (tea.Model, tea.Cmd) {
+	// Dry run: simulate without touching any files
+	if m.dryRun {
+		var deleted []string
+		for _, s := range m.sessions {
+			if m.selected[s.Index] {
+				name := s.Name
+				if s.ProjectPath != "" {
+					name = s.ProjectPath
+				}
+				deleted = append(deleted, name)
+			}
+		}
+		m.state = stateDone
+		m.deleted = deleted
+		m.failed = nil
+		m.selected = make(map[int]bool)
+		m.deleteTotal = 0
+		m.deleteProgress = 0
+		m.purgeMode = false
+		return m, nil
+	}
+
 	m.state = stateDeleting
 
 	snap := make(map[int]bool, len(m.selected))
@@ -515,7 +929,6 @@ func (m model) doDelete() (tea.Model, tea.Cmd) {
 	m.deleteProgress = 0
 	m.deleteSelectedSnap = snap
 
-	// All selected: use RunDelete (--all optimization, single shot)
 	allSelected := total == len(m.sessions) && total > 0
 	if allSelected {
 		sessions := m.sessions
@@ -529,15 +942,12 @@ func (m model) doDelete() (tea.Model, tea.Cmd) {
 		)
 	}
 
-	// Partial selection: per-item sequential cmd for live progress bar.
 	return m, tea.Batch(
 		m.spinner.Tick,
 		nextDeleteCmd(m.sessions, snap, 0, 0, total, nil, nil, m.projectsDir),
 	)
 }
 
-// nextDeleteCmd processes one selected session starting from startIdx and
-// returns either a deleteItemMsg (more items remain) or deleteDoneMsg (all done).
 func nextDeleteCmd(sessions []Session, selected map[int]bool, startIdx, done, total int, deleted, failed []string, projectsDir string) tea.Cmd {
 	return func() tea.Msg {
 		for i := startIdx; i < len(sessions); i++ {
@@ -572,6 +982,17 @@ func (m model) doPurge() (tea.Model, tea.Cmd) {
 }
 
 func (m model) doPurgeDirect(s Session) (tea.Model, tea.Cmd) {
+	if m.dryRun {
+		name := s.Name
+		if s.ProjectPath != "" {
+			name = s.ProjectPath
+		}
+		m.state = stateDone
+		m.deleted = []string{name}
+		m.failed = nil
+		return m, nil
+	}
+
 	m.state = stateDeleting
 	projectsDir := m.projectsDir
 	return m, tea.Batch(
@@ -585,8 +1006,14 @@ func (m model) doPurgeDirect(s Session) (tea.Model, tea.Cmd) {
 	)
 }
 
+// ── Views ─────────────────────────────────────────────────────────────────────
+
 func (m model) View() string {
 	header := m.renderHeader()
+
+	if m.showHelp {
+		return header + m.viewHelp()
+	}
 
 	var body string
 	switch m.state {
@@ -606,18 +1033,87 @@ func (m model) View() string {
 		body = m.viewDeleting()
 	case stateDone:
 		body = m.viewDone()
+	case stateCategories:
+		body = m.viewCategories()
+	case stateCategoryConfirm:
+		body = m.viewCategoryConfirm()
 	}
 
 	return header + body
 }
 
+func (m model) viewHelp() string {
+	cyan := func(s string) string { return lipgloss.NewStyle().Foreground(clrCyan).Bold(true).Render(s) }
+	dim := func(s string) string { return dimStyle.Render(s) }
+
+	row := func(keys, desc string) string {
+		return fmt.Sprintf("  %-24s %s\n", cyan(keys), dim(desc))
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString("  " + lipgloss.NewStyle().Foreground(clrPurple).Bold(true).Render("Key bindings") + "\n")
+	sb.WriteString("  " + dimStyle.Render(strings.Repeat("─", 44)) + "\n\n")
+
+	sb.WriteString(row("↑/↓  j/k", "Navigate list"))
+	sb.WriteString(row("g / G", "Jump to top / bottom"))
+	sb.WriteString(row("space", "Toggle selection"))
+	sb.WriteString(row("a", "Select / deselect all (visible)"))
+	sb.WriteString(row("n", "Unselect all"))
+	sb.WriteString(row("o", "Select all orphaned projects (○)"))
+	sb.WriteString(row("d", "Reset sort / filter / search / selection"))
+	sb.WriteString(row("enter", "Confirm delete (when items selected)"))
+	sb.WriteString(row("p", "Purge mode (full claude project purge)"))
+	sb.WriteString(row("x", "Force-purge at cursor — no confirm"))
+	sb.WriteString("\n")
+	sb.WriteString(row("s", "Cycle sort: recent → size → tokens → name"))
+	sb.WriteString(row("f", "Cycle filter: all → has data → orphaned"))
+	sb.WriteString(row("e", "Cycle expiry: off → 7d → 14d → 30d → 60d → 90d"))
+	sb.WriteString(row("/", "Search by project name / path"))
+	sb.WriteString(row("c", "Open category cleanup (debug, telemetry, history…)"))
+	sb.WriteString(row("esc", "Clear search / filter / sort  (or close help)"))
+	sb.WriteString("\n")
+	sb.WriteString(row("r", "Rescan / refresh project list"))
+	sb.WriteString(row("u", "Update claude-cleaner in-place"))
+	sb.WriteString(row("?", "Toggle this help"))
+	sb.WriteString(row("q / ctrl+c", "Quit"))
+
+	sb.WriteString("\n  " + dimStyle.Render("Press ? or esc to close"))
+	return sb.String()
+}
+
+func (m model) viewUpdatePrompt() string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString("  " + lipgloss.NewStyle().Foreground(clrGreen).Bold(true).Render("⬆  New version available: v"+m.latestVersion) + "\n\n")
+	sb.WriteString("  " + dimStyle.Render("Current: v"+version) + "\n\n")
+	sb.WriteString("  Update now via " + lipgloss.NewStyle().Foreground(clrCyan).Render("npm install -g claude-cleaner@latest") + "?\n\n")
+
+	yes := dimStyle.Render("[ Y ]  Yes, update now")
+	no := dimStyle.Render("[ N ]  No, skip")
+	if m.updatePromptIdx == 0 {
+		yes = lipgloss.NewStyle().Foreground(clrGreen).Bold(true).Render("[ Y ]  Yes, update now")
+	} else {
+		no = lipgloss.NewStyle().Foreground(clrFg).Bold(true).Render("[ N ]  No, skip")
+	}
+	sb.WriteString("  " + yes + "      " + no + "\n\n")
+	sb.WriteString("  " + dimStyle.Render("←/→ select  enter confirm  y yes  n/esc skip"))
+	return sb.String()
+}
+
 func (m model) viewList() string {
-	if len(m.sessions) == 0 {
+	sessions := m.filteredSessions()
+
+	if len(sessions) == 0 {
 		if m.rescanning {
 			return "\n  " + m.spinner.View() + " Rescanning…\n"
 		}
-		return "\n  " + dimStyle.Render("No Claude project sessions found.") + "\n" +
-			"\n  " + dimStyle.Render("r rescan  q quit")
+		msg := "No Claude project sessions found."
+		if m.searchQuery != "" || m.filterMode != filterAll {
+			msg = "No sessions match current filter / search."
+		}
+		return "\n  " + dimStyle.Render(msg) + "\n" +
+			"\n  " + dimStyle.Render("esc clear filter  r rescan  q quit")
 	}
 
 	const (
@@ -635,7 +1131,27 @@ func (m model) viewList() string {
 			lipgloss.NewStyle().Foreground(clrPurple).Render("Rescanning…") + "\n\n")
 	}
 
-	// Header row
+	// Sort / filter / search / expiry status bar
+	var statusParts []string
+	if m.sortMode != sortRecent {
+		statusParts = append(statusParts, "sort: "+m.sortMode.label())
+	}
+	if m.filterMode != filterAll {
+		statusParts = append(statusParts, "filter: "+m.filterMode.label())
+	}
+	if m.searching {
+		statusParts = append(statusParts, "search: "+m.searchQuery+"▌")
+	} else if m.searchQuery != "" {
+		statusParts = append(statusParts, "search: "+m.searchQuery)
+	}
+	if m.expiryDays > 0 {
+		statusParts = append(statusParts, fmt.Sprintf("expiry: >%dd", m.expiryDays))
+	}
+	if len(statusParts) > 0 {
+		sb.WriteString("  " + lipgloss.NewStyle().Foreground(clrCyan).Render(strings.Join(statusParts, "   ")) + "\n\n")
+	}
+
+	// Column header
 	sb.WriteString(dimStyle.Render(fmt.Sprintf("        %-*s  %-*s  %-*s  %s",
 		nameW, "Name",
 		timeW, "Last modified",
@@ -649,8 +1165,8 @@ func (m model) viewList() string {
 		rowW = 82
 	}
 
-	for _, s := range m.sessions {
-		isCursor := m.cursor == s.Index-1
+	for i, s := range sessions {
+		isCursor := m.cursor == i
 		isSelected := m.selected[s.Index]
 
 		var bg lipgloss.Color
@@ -677,7 +1193,6 @@ func (m model) viewList() string {
 			check = lipgloss.NewStyle().Foreground(clrGreen).Background(bg).Bold(true).Render("[✓]")
 		}
 
-		// ● green = has session data  ○ dim = no local data (can still purge config)
 		var status string
 		if s.HasData {
 			status = lipgloss.NewStyle().Foreground(clrGreen).Background(bg).Render("●")
@@ -687,7 +1202,7 @@ func (m model) viewList() string {
 
 		displayName := s.Name
 		if s.ProjectPath != "" {
-			displayName = s.ProjectPath
+			displayName = filepath.Base(s.ProjectPath)
 		}
 
 		nameFg := clrFg
@@ -718,16 +1233,39 @@ func (m model) viewList() string {
 		sb.WriteString(rowStyle.Width(rowW).Render(content) + "\n")
 	}
 
+	// Selection summary with size + tokens
 	selected := 0
-	for _, v := range m.selected {
-		if v {
+	var selSize int64
+	var selTokens int64
+	var anySelTokens bool
+	for _, s := range m.sessions {
+		if m.selected[s.Index] {
 			selected++
+			selSize += s.Size
+			if s.HasTokenData {
+				selTokens += s.TotalTokens
+				anySelTokens = true
+			}
 		}
 	}
 
+	selInfo := countStyle.Render(fmt.Sprintf("%d", selected)) + " selected"
+	if selected > 0 {
+		if selSize > 0 {
+			selInfo += "  •  " + lipgloss.NewStyle().Foreground(clrCyan).Render(formatSize(selSize))
+		}
+		if anySelTokens {
+			selInfo += "  •  " + lipgloss.NewStyle().Foreground(clrPurple).Render(formatTokens(selTokens)+" tok")
+		}
+	}
+
+	expiryLabel := "off"
+	if m.expiryDays > 0 {
+		expiryLabel = fmt.Sprintf("%dd", m.expiryDays)
+	}
 	footer := fmt.Sprintf(
-		"↑/↓ navigate  space select  a select all  enter delete  p purge  x force-purge  q quit    %s selected",
-		countStyle.Render(fmt.Sprintf("%d", selected)),
+		"↑/↓ navigate  space select  a all  enter delete  s sort  f filter  e expiry:%s  c categories  / search  ? help  q quit    %s",
+		expiryLabel, selInfo,
 	)
 	sb.WriteString(helpStyle.Render(footer))
 
@@ -756,7 +1294,7 @@ func (m model) viewConfirm() string {
 		}
 		displayName := s.Name
 		if s.ProjectPath != "" {
-			displayName = s.ProjectPath
+			displayName = filepath.Base(s.ProjectPath)
 		}
 		tokLabel := "—"
 		if s.HasTokenData {
@@ -827,12 +1365,169 @@ func (m model) viewDone() string {
 	}
 
 	if len(m.deleted) > 0 {
-		sb.WriteString(fmt.Sprintf("\n  %s\n",
-			successStyle.Render(fmt.Sprintf("%d session(s) deleted", len(m.deleted))),
-		))
+		var label string
+		if m.categoryMode {
+			label = fmt.Sprintf("%d category/categories cleaned", len(m.deleted))
+			if m.dryRun {
+				label = fmt.Sprintf("%d category/categories would be cleaned  (dry run — nothing was modified)", len(m.deleted))
+			}
+		} else {
+			label = fmt.Sprintf("%d session(s) deleted", len(m.deleted))
+			if m.dryRun {
+				label = fmt.Sprintf("%d session(s) would be deleted  (dry run — nothing was modified)", len(m.deleted))
+			}
+		}
+		sb.WriteString(fmt.Sprintf("\n  %s\n", successStyle.Render(label)))
 	}
 	sb.WriteString("\n  " + dimStyle.Render("enter back to list  q quit"))
 
+	return sb.String()
+}
+
+func (m model) viewCategories() string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString("  " + lipgloss.NewStyle().Foreground(clrPurple).Bold(true).Render("Category Cleanup") + "\n")
+	sb.WriteString("  " + dimStyle.Render(strings.Repeat("─", 60)) + "\n\n")
+
+	if len(m.categories) == 0 {
+		sb.WriteString("  " + m.spinner.View() + " Scanning…\n")
+		return sb.String()
+	}
+
+	rowW := m.width
+	if rowW < 82 {
+		rowW = 82
+	}
+
+	for i, cat := range m.categories {
+		isCursor := m.categoryCursor == i
+		isSelected := m.categorySelected[cat.Key]
+
+		var bg lipgloss.Color
+		var rowStyle lipgloss.Style
+		switch {
+		case isCursor:
+			bg = clrCursor
+			rowStyle = rowCursorStyle
+		case isSelected:
+			bg = clrSelection
+			rowStyle = rowSelectedStyle
+		default:
+			bg = clrBg
+			rowStyle = rowNormalStyle
+		}
+
+		cur := lipgloss.NewStyle().Background(bg).Render("  ")
+		if isCursor {
+			cur = lipgloss.NewStyle().Foreground(clrPurple).Background(bg).Bold(true).Render("▶ ")
+		}
+
+		check := lipgloss.NewStyle().Foreground(clrComment).Background(bg).Render("[ ]")
+		if isSelected {
+			check = lipgloss.NewStyle().Foreground(clrGreen).Background(bg).Bold(true).Render("[✓]")
+		}
+
+		status := lipgloss.NewStyle().Foreground(clrComment).Background(bg).Render("○")
+		if cat.Exists {
+			status = lipgloss.NewStyle().Foreground(clrGreen).Background(bg).Render("●")
+		}
+
+		label := lipgloss.NewStyle().Foreground(clrFg).Background(bg).Width(42).Render(truncate(cat.Label, 42))
+
+		var info string
+		switch cat.Key {
+		case "json-orphans":
+			if cat.FileCount > 0 {
+				info = lipgloss.NewStyle().Foreground(clrCyan).Background(bg).Render(
+					fmt.Sprintf("%d orphan entries", cat.FileCount))
+			} else {
+				info = dimStyle.Render("clean")
+			}
+		case "history-trim":
+			if cat.Exists {
+				info = lipgloss.NewStyle().Foreground(clrCyan).Background(bg).Render(formatSize(cat.Size))
+			} else {
+				info = dimStyle.Render("not found")
+			}
+		default:
+			if cat.Exists && (cat.Size > 0 || cat.FileCount > 0) {
+				sizeStr := formatSize(cat.Size)
+				if cat.FileCount > 0 {
+					info = lipgloss.NewStyle().Foreground(clrCyan).Background(bg).Render(
+						fmt.Sprintf("%-10s (%d files)", sizeStr, cat.FileCount))
+				} else {
+					info = lipgloss.NewStyle().Foreground(clrCyan).Background(bg).Render(sizeStr)
+				}
+			} else {
+				info = dimStyle.Render("empty")
+			}
+		}
+
+		content := cur + check + " " + status + " " + label + "  " + info
+		sb.WriteString(rowStyle.Width(rowW).Render(content) + "\n")
+	}
+
+	// Total selected size
+	var selSize int64
+	selCount := 0
+	for _, cat := range m.categories {
+		if m.categorySelected[cat.Key] {
+			selCount++
+			selSize += cat.Size
+		}
+	}
+	selInfo := countStyle.Render(fmt.Sprintf("%d", selCount)) + " selected"
+	if selCount > 0 && selSize > 0 {
+		selInfo += "  •  " + lipgloss.NewStyle().Foreground(clrCyan).Render(formatSize(selSize))
+	}
+
+	footer := fmt.Sprintf("↑/↓ navigate  space select  a all  n unselect  enter clean selected  esc back to projects    %s", selInfo)
+	sb.WriteString(helpStyle.Render(footer))
+	return sb.String()
+}
+
+func (m model) viewCategoryConfirm() string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString("  " + dangerStyle.Render("⚠  Will clean the following categories:") + "\n\n")
+
+	var totalSize int64
+	for _, cat := range m.categories {
+		if !m.categorySelected[cat.Key] {
+			continue
+		}
+		totalSize += cat.Size
+		var detail string
+		switch cat.Key {
+		case "json-orphans":
+			detail = fmt.Sprintf("%d orphan entries", cat.FileCount)
+		case "history-trim":
+			detail = fmt.Sprintf("trim to 500 lines  (%s)", formatSize(cat.Size))
+		default:
+			detail = formatSize(cat.Size)
+		}
+		sb.WriteString(fmt.Sprintf("    %s  %s  %s\n",
+			checkOnStyle.Render("✓"),
+			nameStyle.Render(truncate(cat.Label, 44)),
+			sizeStyle.Render(detail),
+		))
+	}
+
+	if totalSize > 0 {
+		sb.WriteString(fmt.Sprintf("\n  Total: %s\n", sizeStyle.Render(formatSize(totalSize))))
+	}
+	sb.WriteString("\n  " + dimStyle.Render("Original source code and settings.json are NOT affected.") + "\n\n")
+
+	no := dimStyle.Render("[ N ]  No, cancel")
+	yes := dimStyle.Render("[ Y ]  Yes, clean")
+	if m.confirmIdx == 0 {
+		no = lipgloss.NewStyle().Foreground(clrFg).Bold(true).Render("[ N ]  No, cancel")
+	} else {
+		yes = lipgloss.NewStyle().Foreground(clrRed).Bold(true).Render("[ Y ]  Yes, clean")
+	}
+	sb.WriteString("  " + no + "      " + yes + "\n\n")
+	sb.WriteString("  " + dimStyle.Render("←/→ or y/n select  enter confirm  esc back"))
 	return sb.String()
 }
 
@@ -854,6 +1549,7 @@ func (m model) renderHeader() string {
 	divider := lipgloss.NewStyle().Foreground(clrPurple).Render(strings.Repeat("─", 36))
 	dirLine := label("Dir") + lipgloss.NewStyle().Foreground(clrFg).Render(m.claudeDir)
 	webLine := label("Web") + lipgloss.NewStyle().Foreground(clrCyan).Render("https://eplus.dev")
+
 	var verBadge string
 	switch {
 	case !m.updateChecked:
@@ -883,7 +1579,36 @@ func (m model) renderHeader() string {
 	}
 	scanLine := label("Scanned") + lipgloss.NewStyle().Foreground(clrComment).Render(scanLabel)
 
-	info := strings.Join([]string{title, divider, dirLine, webLine, claudeLine, verLine, scanLine}, "\n")
+	// Total stats across all projects
+	var totalSize int64
+	var totalTokens int64
+	var anyTok bool
+	for _, s := range m.sessions {
+		totalSize += s.Size
+		if s.HasTokenData {
+			totalTokens += s.TotalTokens
+			anyTok = true
+		}
+	}
+	totalTokStr := "—"
+	if anyTok {
+		totalTokStr = formatTokens(totalTokens)
+	}
+	statsLine := label("Projects") + lipgloss.NewStyle().Foreground(clrFg).Render(
+		fmt.Sprintf("%d  •  %s  •  %s tokens", len(m.sessions), formatSize(totalSize), totalTokStr),
+	)
+
+	lines := []string{title, divider, dirLine, webLine, claudeLine, verLine, scanLine, statsLine}
+	if m.dryRun {
+		dryBadge := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFB86C")).Bold(true).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#FFB86C")).
+			Padding(0, 1).
+			Render("DRY RUN — no files will be modified")
+		lines = append(lines, dryBadge)
+	}
+	info := strings.Join(lines, "\n")
 	infoPanel := lipgloss.NewStyle().Padding(0, 2).Render(info)
 
 	if m.width > 0 && m.width < 90 {

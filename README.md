@@ -6,12 +6,15 @@
 [![Go version](https://img.shields.io/github/go-mod/go-version/ePlus-DEV/claude-cleaner)](go.mod)
 [![Go Report Card](https://goreportcard.com/badge/github.com/ePlus-DEV/claude-cleaner)](https://goreportcard.com/report/github.com/ePlus-DEV/claude-cleaner)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Known Vulnerabilities](https://snyk.io/test/github/ePlus-DEV/claude-cleaner/badge.svg)](https://snyk.io/test/github/ePlus-DEV/claude-cleaner)
 
 **Claude Cleaner** is an interactive terminal UI — built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lip Gloss](https://github.com/charmbracelet/lipgloss) — that inspects Claude Code project session history, displays disk usage, and safely deletes only the sessions you select.
 
 Runs on Windows, macOS, and Linux. No runtime required when using a pre-built binary.
 
 ![Full demo](demo/full.gif)
+
+> See [SCREENSHOTS.md](SCREENSHOTS.md) for all scenario walkthroughs.
 
 ## Install
 
@@ -62,6 +65,7 @@ claude-cleaner --version
 
 ```text
 --claude-dir <path>   Custom Claude config directory (default: ~/.claude)
+--mock-update         Simulate a newer version available (for testing the update flow)
 -h, --help            Show help
 -v, --version         Show version
 ```
@@ -84,7 +88,7 @@ claude-cleaner --version
 ## Features
 
 - Reads project list from `~/.claude.json` — shows all projects Claude Code knows about, even those with no local session files.
-- Displays **token usage** per project (from `lastTotal*` fields in `~/.claude.json`), formatted as K / M / B / T / P / E.
+- Displays **token usage** per project — reads `lastTotal*` fields from `~/.claude.json` when available, otherwise aggregates `message.usage` from session `.jsonl` files. Formatted as K / M / B / T / P / E.
 - Status column `●` (session files on disk) / `○` (config only, no local data).
 - Windows path dedup — `d:/foo` and `D:/foo` treated as the same project; higher-token entry wins.
 - Multi-select with `space`, select all with `a`, confirm with `enter`.
@@ -132,15 +136,6 @@ $env:CLAUDE_CONFIG_DIR = "D:\ClaudeData"
 claude-cleaner
 ```
 
-## Demos
-
-| Scenario | Preview |
-| --- | --- |
-| `--help` | ![Help](demo/help.gif) |
-| Delete a session | ![Full flow](demo/full.gif) |
-| Cancel confirmation | ![Cancel](demo/cancel.gif) |
-| In-place update | ![Update](demo/update.gif) |
-
 ## Troubleshooting
 
 **Claude directory not found** — Run Claude Code at least once so the directory is created, or point to the correct path:
@@ -166,7 +161,7 @@ go build -o claude-cleaner.exe .
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, build, test, and release instructions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, build, test, and release instructions. For internal data flow diagrams see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## License
 

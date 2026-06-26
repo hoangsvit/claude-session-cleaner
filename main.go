@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-var version = "1.0.1"
+var version = "1.1.0"
 
 func printHelp() {
 	fmt.Printf(`Claude Cleaner v%s  —  ePlus.DEV
@@ -27,20 +27,37 @@ Usage:
 
 Options:
   --claude-dir <path>   Custom Claude config directory (default: ~/.claude)
+  --dry-run             Preview what would be deleted without touching any files
+  --mock-update         Simulate a newer version available (for testing)
   -h, --help            Show help
   -v, --version         Show version
 
 Key bindings:
-  ↑/↓ or j/k   Navigate
+  ↑/↓ or j/k   Navigate list
+  g / G         Jump to top / bottom
   space         Toggle selection
-  a             Select / deselect all
-  enter         Confirm selection
-  esc           Go back
-  q / ctrl+c    Quit
+  a             Select / deselect all (visible)
+  n             Unselect all
+  o             Select all orphaned projects (○)
+  d             Reset sort / filter / search / selection to defaults
+  enter         Confirm — show delete screen (when items selected)
+  p             Purge selected (confirm screen)
+  x             Force-purge item at cursor — no confirm
+  s             Cycle sort: recent → size → tokens → name
+  f             Cycle filter: all → has data → orphaned
+  e             Cycle expiry: off → 7d → 14d → 30d → 60d → 90d
+  c             Open category cleanup (debug logs, telemetry, history…)
+  /             Search by project name / path
+  r             Rescan / refresh project list
+  u             Update claude-cleaner in-place (when update available)
+  ?             Show key bindings
+  esc           Go back / clear search / cancel
+  q / ctrl+c    Quit (any screen)
 
 Safety:
   Only session folders inside ~/.claude/projects are deleted.
   Source code directories are never touched.
+  --dry-run shows exactly what would be deleted without modifying anything.
 `, version)
 }
 
@@ -60,7 +77,7 @@ func resolveClaudeDir(dir string) (string, error) {
 
 func main() {
 	var claudeDirFlag string
-	var helpFlag, versionFlag, mockUpdateFlag bool
+	var helpFlag, versionFlag, mockUpdateFlag, dryRunFlag bool
 
 	flag.StringVar(&claudeDirFlag, "claude-dir", "", "Custom Claude config directory")
 	flag.BoolVar(&helpFlag, "help", false, "Show help")
@@ -68,6 +85,7 @@ func main() {
 	flag.BoolVar(&versionFlag, "version", false, "Show version")
 	flag.BoolVar(&versionFlag, "v", false, "Show version")
 	flag.BoolVar(&mockUpdateFlag, "mock-update", false, "Simulate a newer version available (for testing)")
+	flag.BoolVar(&dryRunFlag, "dry-run", false, "Preview deletions without modifying any files")
 	flag.Parse()
 
 	if versionFlag {
@@ -101,7 +119,22 @@ func main() {
 	// ~/.claude.json is one level above claudeDir (~/.claude → ~)
 	claudeJSONPath := filepath.Join(filepath.Dir(claudeDir), ".claude.json")
 
+	prefs := loadPrefs(claudeDir)
+
 	m := newModel(claudeDir, claudeJSONPath, projectsDir)
+	m.sortMode = sortMode(prefs.SortMode)
+	m.filterMode = filterMode(prefs.FilterMode)
+	m.expiryDays = prefs.ExpiryDays
+	// restore expiryIdx so cycling works correctly
+	for i, v := range []int{0, 7, 14, 30, 60, 90} {
+		if v == prefs.ExpiryDays {
+			m.expiryIdx = i
+			break
+		}
+	}
+	if dryRunFlag {
+		m.dryRun = true
+	}
 	if mockUpdateFlag {
 		m.latestVersion = "99.0.0"
 		m.hasUpdate = true

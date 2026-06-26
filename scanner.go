@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,7 +21,7 @@ type Session struct {
 	Modified     time.Time
 	Size         int64
 	TotalTokens  int64
-	HasTokenData bool // false = token fields absent in ~/.claude.json (show "—")
+	HasTokenData bool // false = no token data in ~/.claude.json or session .jsonl files (show "—")
 	HasData      bool // false = directory absent or empty (no session files found)
 }
 
@@ -54,6 +55,56 @@ func (e projectEntry) hasAnyField() bool {
 		e.LastTotalOutputTokens != nil ||
 		e.LastTotalCacheCreationInputTokens != nil ||
 		e.LastTotalCacheReadInputTokens != nil
+}
+
+// jsonlTokens holds just the four token fields from message.usage in a .jsonl line.
+type jsonlTokens struct {
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+}
+
+// scanProjectTokens sums token usage from all top-level .jsonl session files in
+// dirPath. Returns (total, hasData); hasData is true when at least one usage
+// record was found.
+func scanProjectTokens(dirPath string) (int64, bool) {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return 0, false
+	}
+	var total int64
+	var hasData bool
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		f, err := os.Open(filepath.Join(dirPath, e.Name()))
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 1<<20), 1<<20) // 1 MB per line – handles large tool outputs
+		for sc.Scan() {
+			var row struct {
+				Type    string `json:"type"`
+				Message struct {
+					Usage *jsonlTokens `json:"usage"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(sc.Bytes(), &row) != nil {
+				continue
+			}
+			if row.Type != "assistant" || row.Message.Usage == nil {
+				continue
+			}
+			u := row.Message.Usage
+			total += u.InputTokens + u.OutputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+			hasData = true
+		}
+		f.Close()
+	}
+	return total, hasData
 }
 
 // normalizePath lowercases and normalises separators so Windows paths are
@@ -147,14 +198,19 @@ func scanSessions(claudeJSONPath, projectsDir string) ([]Session, error) {
 			dirPath := filepath.Join(projectsDir, encoded)
 			size, modified := projectStats(dirPath)
 
+			totalTokens := e.total()
+			hasTokenData := e.hasAnyField()
+			if !hasTokenData {
+				totalTokens, hasTokenData = scanProjectTokens(dirPath)
+			}
 			ch <- Session{
 				Name:         encoded,
 				Path:         dirPath,
 				ProjectPath:  projPath,
 				Modified:     modified,
 				Size:         size,
-				TotalTokens:  e.total(),
-				HasTokenData: e.hasAnyField(),
+				TotalTokens:  totalTokens,
+				HasTokenData: hasTokenData,
 				HasData:      !modified.IsZero(),
 			}
 		}(projectPath, entry)
@@ -179,7 +235,7 @@ func scanSessions(claudeJSONPath, projectsDir string) ([]Session, error) {
 }
 
 // scanFromDir is the fallback: enumerate subdirectories of projectsDir directly.
-// Token data is unavailable without ~/.claude.json.
+// Token data is read from .jsonl session files since ~/.claude.json is absent.
 func scanFromDir(projectsDir string) ([]Session, error) {
 	entries, err := os.ReadDir(projectsDir)
 	if err != nil {
@@ -198,12 +254,15 @@ func scanFromDir(projectsDir string) ([]Session, error) {
 			defer wg.Done()
 			dirPath := filepath.Join(projectsDir, e.Name())
 			size, modified := projectStats(dirPath)
+			totalTokens, hasTokenData := scanProjectTokens(dirPath)
 			ch <- Session{
-				Name:     e.Name(),
-				Path:     dirPath,
-				Modified: modified,
-				Size:     size,
-				HasData:  !modified.IsZero(),
+				Name:         e.Name(),
+				Path:         dirPath,
+				Modified:     modified,
+				Size:         size,
+				TotalTokens:  totalTokens,
+				HasTokenData: hasTokenData,
+				HasData:      !modified.IsZero(),
 			}
 		}(entry)
 	}
@@ -316,6 +375,234 @@ func safeRemove(projectsDir, targetPath string) error {
 		return fmt.Errorf("refusing to delete path outside projects directory")
 	}
 	return os.RemoveAll(targetPath)
+}
+
+// ── Category cleanup ──────────────────────────────────────────────────────────
+
+// Category represents a cleanable data directory or special cleanup operation.
+type Category struct {
+	Key       string
+	Label     string
+	Path      string
+	Size      int64
+	FileCount int
+	Exists    bool
+	Special   bool // JSON orphan cleanup / history trim — not a plain RemoveAll
+}
+
+var cleanableDirs = []struct {
+	key   string
+	label string
+	dir   string
+}{
+	{"debug", "Debug logs", "debug"},
+	{"file-history", "File history", "file-history"},
+	{"telemetry", "Telemetry", "telemetry"},
+	{"shell-snapshots", "Shell snapshots", "shell-snapshots"},
+	{"transcripts", "Transcripts", "transcripts"},
+	{"todos", "Todos", "todos"},
+	{"plans", "Plans", "plans"},
+	{"usage-data", "Usage data", "usage-data"},
+	{"tasks", "Tasks", "tasks"},
+	{"paste-cache", "Paste cache", "paste-cache"},
+	{"plugins", "Plugins cache", "plugins"},
+}
+
+// dirSizeCount returns total size and file count for a flat directory.
+func dirSizeCount(path string) (size int64, count int) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if !e.IsDir() {
+			size += info.Size()
+			count++
+		}
+	}
+	return
+}
+
+// scanCategories returns cleanable categories inside claudeDir plus special entries.
+func scanCategories(claudeDir string) []Category {
+	var result []Category
+
+	for _, cat := range cleanableDirs {
+		path := filepath.Join(claudeDir, cat.dir)
+		_, statErr := os.Stat(path)
+		size, count := dirSizeCount(path)
+		result = append(result, Category{
+			Key:       cat.key,
+			Label:     cat.label,
+			Path:      path,
+			Size:      size,
+			FileCount: count,
+			Exists:    statErr == nil,
+		})
+	}
+
+	// Config backups: ~/.claude.json.backup* (sibling of claudeDir)
+	parentDir := filepath.Dir(claudeDir)
+	backups, _ := filepath.Glob(filepath.Join(parentDir, ".claude.json.backup*"))
+	var backupSize int64
+	for _, b := range backups {
+		if info, err := os.Stat(b); err == nil {
+			backupSize += info.Size()
+		}
+	}
+	result = append(result, Category{
+		Key:       "config-backups",
+		Label:     "Config backups (.claude.json.backup*)",
+		Path:      parentDir,
+		Size:      backupSize,
+		FileCount: len(backups),
+		Exists:    len(backups) > 0,
+	})
+
+	// Orphan project entries in ~/.claude.json
+	claudeJSONPath := filepath.Join(parentDir, ".claude.json")
+	orphanCount, jsonExists := countOrphanEntries(claudeJSONPath)
+	result = append(result, Category{
+		Key:       "json-orphans",
+		Label:     "Orphan project entries in ~/.claude.json",
+		Path:      claudeJSONPath,
+		Size:      0,
+		FileCount: orphanCount,
+		Exists:    jsonExists && orphanCount > 0,
+		Special:   true,
+	})
+
+	// History trim: ~/.claude/history.jsonl
+	histPath := filepath.Join(claudeDir, "history.jsonl")
+	histSize := int64(0)
+	histExists := false
+	if info, err := os.Stat(histPath); err == nil {
+		histSize = info.Size()
+		histExists = histSize > 0
+	}
+	result = append(result, Category{
+		Key:     "history-trim",
+		Label:   "Trim history.jsonl (keep last 500 lines)",
+		Path:    histPath,
+		Size:    histSize,
+		Exists:  histExists,
+		Special: true,
+	})
+
+	return result
+}
+
+// countOrphanEntries returns the number of project paths in ~/.claude.json
+// whose directories no longer exist, plus whether the file was readable.
+func countOrphanEntries(claudeJSONPath string) (count int, exists bool) {
+	data, err := os.ReadFile(claudeJSONPath)
+	if err != nil {
+		return 0, false
+	}
+	var cfg struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return 0, true
+	}
+	for path := range cfg.Projects {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			count++
+		}
+	}
+	return count, true
+}
+
+// cleanCategory executes the cleanup operation for a category.
+func cleanCategory(cat Category, claudeDir string) error {
+	switch cat.Key {
+	case "json-orphans":
+		parentDir := filepath.Dir(claudeDir)
+		return cleanOrphanEntries(filepath.Join(parentDir, ".claude.json"))
+	case "history-trim":
+		return trimHistory(cat.Path, 500)
+	case "config-backups":
+		parentDir := filepath.Dir(claudeDir)
+		backups, _ := filepath.Glob(filepath.Join(parentDir, ".claude.json.backup*"))
+		for _, b := range backups {
+			_ = os.Remove(b)
+		}
+		return nil
+	default:
+		if cat.Path == "" || !cat.Exists {
+			return nil
+		}
+		return os.RemoveAll(cat.Path)
+	}
+}
+
+// cleanOrphanEntries removes project entries from ~/.claude.json where the
+// project directory no longer exists, writing back atomically.
+func cleanOrphanEntries(claudeJSONPath string) error {
+	data, err := os.ReadFile(claudeJSONPath)
+	if err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	projectsRaw, ok := raw["projects"]
+	if !ok {
+		return nil
+	}
+	var projects map[string]json.RawMessage
+	if err := json.Unmarshal(projectsRaw, &projects); err != nil {
+		return err
+	}
+	changed := false
+	for path := range projects {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			delete(projects, path)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	newProjects, err := json.Marshal(projects)
+	if err != nil {
+		return err
+	}
+	raw["projects"] = newProjects
+	newData, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmpPath := claudeJSONPath + ".tmp"
+	if err := os.WriteFile(tmpPath, newData, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, claudeJSONPath)
+}
+
+// trimHistory keeps only the last keepLines lines of histPath, writing atomically.
+func trimHistory(histPath string, keepLines int) error {
+	data, err := os.ReadFile(histPath)
+	if err != nil {
+		return err
+	}
+	content := strings.TrimRight(string(data), "\n")
+	lines := strings.Split(content, "\n")
+	if len(lines) <= keepLines {
+		return nil
+	}
+	kept := lines[len(lines)-keepLines:]
+	newContent := strings.Join(kept, "\n") + "\n"
+	tmpPath := histPath + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(newContent), 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, histPath)
 }
 
 func formatSize(b int64) string {

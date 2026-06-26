@@ -30,7 +30,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.24"
+          go-version: "1.25"
           cache: true
 
       - name: Cache VHS binary
@@ -74,6 +74,8 @@ jobs:
           vhs demo/full.tape
           vhs demo/cancel.tape
           vhs demo/update.tape
+          vhs demo/features.tape
+          vhs demo/screenshot.tape
 
       # On PRs: upload as artifact for preview — cannot commit to fork branches
       - name: Upload GIFs as artifact (PR preview)
@@ -82,7 +84,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: demo-gifs
-          path: demo/*.gif
+          path: |
+            demo/*.gif
+            demo/*.png
           retention-days: 7
 
       - name: Publish GIFs for inline PR preview
@@ -134,11 +138,13 @@ jobs:
           full_markdown="$(publish_markdown demo/full.gif)"
           cancel_markdown="$(publish_markdown demo/cancel.gif)"
           update_markdown="$(publish_markdown demo/update.gif)"
+          features_markdown="$(publish_markdown demo/features.gif)"
 
           set_output help "$help_markdown"
           set_output full "$full_markdown"
           set_output cancel "$cancel_markdown"
           set_output update "$update_markdown"
+          set_output features "$features_markdown"
 
       - name: Comment demo GIF preview on PR
         if: github.event_name == 'pull_request'
@@ -148,6 +154,8 @@ jobs:
           FULL_GIF: ${{ steps.publish-gifs.outputs.full }}
           CANCEL_GIF: ${{ steps.publish-gifs.outputs.cancel }}
           UPDATE_GIF: ${{ steps.publish-gifs.outputs.update }}
+          FEATURES_GIF: ${{ steps.publish-gifs.outputs.features }}
+          ARTIFACT_URL: ${{ steps.upload-gifs.outputs.artifact-url }}
         with:
           script: |
             const marker = '<!-- claude-cleaner-demo-gifs -->';
@@ -156,6 +164,12 @@ jobs:
               '## Latest terminal demo GIFs',
               '',
               'The newest generated terminal GIFs for this pull request are shown below:',
+              '',
+              '### Screenshot',
+              `[Download screenshot.png](${process.env.ARTIFACT_URL})`,
+              '',
+              '### Search, sort, filter, category',
+              process.env.FEATURES_GIF,
               '',
               '### Help',
               process.env.HELP_GIF,
@@ -202,4 +216,4 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: update demo GIFs [skip ci]"
-          file_pattern: demo/*.gif
+          file_pattern: demo/*.gif demo/*.png

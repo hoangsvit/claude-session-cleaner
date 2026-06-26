@@ -120,12 +120,14 @@ func TestSafeRemove(t *testing.T) {
 func TestScanSessionsFromDir(t *testing.T) {
 	projectsDir := t.TempDir()
 	names := []string{"proj-a", "proj-b", "proj-c"}
+	// Each session has real usage data so we can verify token reading.
+	usageLine := `{"type":"assistant","message":{"usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":200,"cache_read_input_tokens":300}}}` + "\n"
 	for _, name := range names {
 		dir := filepath.Join(projectsDir, name)
 		if err := os.Mkdir(dir, 0755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(usageLine), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -143,6 +145,13 @@ func TestScanSessionsFromDir(t *testing.T) {
 		}
 		if s.Size == 0 {
 			t.Errorf("session[%d].Size should be > 0", i)
+		}
+		if !s.HasTokenData {
+			t.Errorf("session[%d] should have token data from .jsonl", i)
+		}
+		// 1000 + 500 + 200 + 300 = 2000
+		if s.TotalTokens != 2000 {
+			t.Errorf("session[%d] tokens want 2000, got %d", i, s.TotalTokens)
 		}
 	}
 }
@@ -195,9 +204,95 @@ func TestScanSessionsFromClaudeJSON(t *testing.T) {
 		}
 		if s.ProjectPath == "/home/user/other-proj" {
 			if s.HasTokenData {
-				t.Error("other-proj should not have token data (no fields in JSON)")
+				t.Error("other-proj should not have token data (no fields in JSON and no usage in .jsonl)")
 			}
 		}
+	}
+}
+
+func TestScanProjectTokens(t *testing.T) {
+	dir := t.TempDir()
+	// Two assistant messages with usage; one user message (ignored); one assistant with no usage (ignored).
+	lines := "" +
+		`{"type":"user","message":{"content":"hello"}}` + "\n" +
+		`{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":200,"cache_read_input_tokens":30}}}` + "\n" +
+		`{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}` + "\n" +
+		`{"type":"assistant","message":{}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(lines), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	total, hasData := scanProjectTokens(dir)
+	if !hasData {
+		t.Error("hasData should be true")
+	}
+	// (100+50+200+30) + (10+5+0+0) = 395
+	want := int64(395)
+	if total != want {
+		t.Errorf("total want %d, got %d", want, total)
+	}
+}
+
+func TestScanProjectTokensEmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	total, hasData := scanProjectTokens(dir)
+	if hasData {
+		t.Error("empty dir: hasData should be false")
+	}
+	if total != 0 {
+		t.Errorf("empty dir: total should be 0, got %d", total)
+	}
+}
+
+func TestScanProjectTokensNoUsage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "s.jsonl"), []byte("{}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	total, hasData := scanProjectTokens(dir)
+	if hasData {
+		t.Error("no usage lines: hasData should be false")
+	}
+	if total != 0 {
+		t.Errorf("total should be 0, got %d", total)
+	}
+}
+
+func TestScanSessionsClaudeJSONFallsBackToJSONL(t *testing.T) {
+	projectsDir := t.TempDir()
+
+	// Project exists in claude.json but has no token fields — .jsonl has usage.
+	projPath := "/home/user/no-fields-proj"
+	encoded := encodePath(projPath)
+	dir := filepath.Join(projectsDir, encoded)
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	jsonl := `{"type":"assistant","message":{"usage":{"input_tokens":500,"output_tokens":250,"cache_creation_input_tokens":100,"cache_read_input_tokens":50}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(jsonl), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	claudeJSON := `{"projects":{"/home/user/no-fields-proj":{}}}`
+	jsonPath := filepath.Join(t.TempDir(), ".claude.json")
+	if err := os.WriteFile(jsonPath, []byte(claudeJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := scanSessions(jsonPath, projectsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	if !s.HasTokenData {
+		t.Error("should have token data from .jsonl fallback")
+	}
+	// 500 + 250 + 100 + 50 = 900
+	if s.TotalTokens != 900 {
+		t.Errorf("total tokens want 900, got %d", s.TotalTokens)
 	}
 }
 

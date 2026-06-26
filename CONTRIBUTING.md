@@ -6,14 +6,14 @@ Thank you for your interest in contributing!
 
 | Layer | Tool |
 | --- | --- |
-| CLI / TUI | Go 1.22+, [Bubble Tea](https://github.com/charmbracelet/bubbletea), [Lip Gloss](https://github.com/charmbracelet/lipgloss) |
+| CLI / TUI | Go 1.25+, [Bubble Tea](https://github.com/charmbracelet/bubbletea), [Lip Gloss](https://github.com/charmbracelet/lipgloss) |
 | npm wrapper | Node.js 20+ (thin shim — downloads Go binary on install) |
 | Releases | [GoReleaser](https://goreleaser.com) + GitHub Actions |
 | Demo GIFs | [VHS](https://github.com/charmbracelet/vhs) |
 
 ## Prerequisites
 
-- [Go 1.22+](https://go.dev/dl/)
+- [Go 1.25+](https://go.dev/dl/)
 - [Node.js 20+](https://nodejs.org/) (for npm wrapper scripts)
 - Git
 
@@ -65,14 +65,6 @@ go run . --claude-dir $env:TEMP\claude-demo
 
 Creates 5 fake project sessions of various sizes — enough to test all TUI flows (navigate, select, delete, cancel) without touching real Claude data.
 
-### Simulate an update prompt
-
-```bash
-go run . --mock-update
-```
-
-Injects fake `v99.0.0` — triggers the update prompt on startup. Press `n` to skip into the list.
-
 ## Tests
 
 ```bash
@@ -116,9 +108,10 @@ demo/
   *.tape          — VHS scripts for demo GIFs
 
 .github/workflows/
-  ci.yml          — Go tests on every push / PR
+  ci.yml          — Go tests (1.25 / 1.26 × Windows / macOS / Linux) on push / PR
   release.yml     — GoReleaser (binaries) + npm publish (wrapper)
   demo.yml        — regenerate demo GIFs on change
+  snyk.yml        — dependency vulnerability scan (push / PR + weekly)
 ```
 
 ### Key data flow
