@@ -103,18 +103,18 @@ func TestNavigateDown(t *testing.T) {
 
 func TestNavigateUpBoundary(t *testing.T) {
 	m := makeTestModel(fakeSessions(3))
-	m = pressKey(m, "up")
-	if m.cursor != 0 {
-		t.Errorf("cursor should stay 0, got %d", m.cursor)
+	m = pressKey(m, "up") // wraps to last item
+	if m.cursor != 2 {
+		t.Errorf("cursor should wrap to 2, got %d", m.cursor)
 	}
 }
 
 func TestNavigateDownBoundary(t *testing.T) {
 	m := makeTestModel(fakeSessions(3))
 	m.cursor = 2
-	m = pressKey(m, "down")
-	if m.cursor != 2 {
-		t.Errorf("cursor should stay 2, got %d", m.cursor)
+	m = pressKey(m, "down") // wraps to first item
+	if m.cursor != 0 {
+		t.Errorf("cursor should wrap to 0, got %d", m.cursor)
 	}
 }
 

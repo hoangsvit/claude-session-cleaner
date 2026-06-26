@@ -318,6 +318,234 @@ func safeRemove(projectsDir, targetPath string) error {
 	return os.RemoveAll(targetPath)
 }
 
+// ── Category cleanup ──────────────────────────────────────────────────────────
+
+// Category represents a cleanable data directory or special cleanup operation.
+type Category struct {
+	Key       string
+	Label     string
+	Path      string
+	Size      int64
+	FileCount int
+	Exists    bool
+	Special   bool // JSON orphan cleanup / history trim — not a plain RemoveAll
+}
+
+var cleanableDirs = []struct {
+	key   string
+	label string
+	dir   string
+}{
+	{"debug", "Debug logs", "debug"},
+	{"file-history", "File history", "file-history"},
+	{"telemetry", "Telemetry", "telemetry"},
+	{"shell-snapshots", "Shell snapshots", "shell-snapshots"},
+	{"transcripts", "Transcripts", "transcripts"},
+	{"todos", "Todos", "todos"},
+	{"plans", "Plans", "plans"},
+	{"usage-data", "Usage data", "usage-data"},
+	{"tasks", "Tasks", "tasks"},
+	{"paste-cache", "Paste cache", "paste-cache"},
+	{"plugins", "Plugins cache", "plugins"},
+}
+
+// dirSizeCount returns total size and file count for a flat directory.
+func dirSizeCount(path string) (size int64, count int) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if !e.IsDir() {
+			size += info.Size()
+			count++
+		}
+	}
+	return
+}
+
+// scanCategories returns cleanable categories inside claudeDir plus special entries.
+func scanCategories(claudeDir string) []Category {
+	var result []Category
+
+	for _, cat := range cleanableDirs {
+		path := filepath.Join(claudeDir, cat.dir)
+		_, statErr := os.Stat(path)
+		size, count := dirSizeCount(path)
+		result = append(result, Category{
+			Key:       cat.key,
+			Label:     cat.label,
+			Path:      path,
+			Size:      size,
+			FileCount: count,
+			Exists:    statErr == nil,
+		})
+	}
+
+	// Config backups: ~/.claude.json.backup* (sibling of claudeDir)
+	parentDir := filepath.Dir(claudeDir)
+	backups, _ := filepath.Glob(filepath.Join(parentDir, ".claude.json.backup*"))
+	var backupSize int64
+	for _, b := range backups {
+		if info, err := os.Stat(b); err == nil {
+			backupSize += info.Size()
+		}
+	}
+	result = append(result, Category{
+		Key:       "config-backups",
+		Label:     "Config backups (.claude.json.backup*)",
+		Path:      parentDir,
+		Size:      backupSize,
+		FileCount: len(backups),
+		Exists:    len(backups) > 0,
+	})
+
+	// Orphan project entries in ~/.claude.json
+	claudeJSONPath := filepath.Join(parentDir, ".claude.json")
+	orphanCount, jsonExists := countOrphanEntries(claudeJSONPath)
+	result = append(result, Category{
+		Key:       "json-orphans",
+		Label:     "Orphan project entries in ~/.claude.json",
+		Path:      claudeJSONPath,
+		Size:      0,
+		FileCount: orphanCount,
+		Exists:    jsonExists && orphanCount > 0,
+		Special:   true,
+	})
+
+	// History trim: ~/.claude/history.jsonl
+	histPath := filepath.Join(claudeDir, "history.jsonl")
+	histSize := int64(0)
+	histExists := false
+	if info, err := os.Stat(histPath); err == nil {
+		histSize = info.Size()
+		histExists = histSize > 0
+	}
+	result = append(result, Category{
+		Key:     "history-trim",
+		Label:   "Trim history.jsonl (keep last 500 lines)",
+		Path:    histPath,
+		Size:    histSize,
+		Exists:  histExists,
+		Special: true,
+	})
+
+	return result
+}
+
+// countOrphanEntries returns the number of project paths in ~/.claude.json
+// whose directories no longer exist, plus whether the file was readable.
+func countOrphanEntries(claudeJSONPath string) (count int, exists bool) {
+	data, err := os.ReadFile(claudeJSONPath)
+	if err != nil {
+		return 0, false
+	}
+	var cfg struct {
+		Projects map[string]json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return 0, true
+	}
+	for path := range cfg.Projects {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			count++
+		}
+	}
+	return count, true
+}
+
+// cleanCategory executes the cleanup operation for a category.
+func cleanCategory(cat Category, claudeDir string) error {
+	switch cat.Key {
+	case "json-orphans":
+		parentDir := filepath.Dir(claudeDir)
+		return cleanOrphanEntries(filepath.Join(parentDir, ".claude.json"))
+	case "history-trim":
+		return trimHistory(cat.Path, 500)
+	case "config-backups":
+		parentDir := filepath.Dir(claudeDir)
+		backups, _ := filepath.Glob(filepath.Join(parentDir, ".claude.json.backup*"))
+		for _, b := range backups {
+			_ = os.Remove(b)
+		}
+		return nil
+	default:
+		if cat.Path == "" || !cat.Exists {
+			return nil
+		}
+		return os.RemoveAll(cat.Path)
+	}
+}
+
+// cleanOrphanEntries removes project entries from ~/.claude.json where the
+// project directory no longer exists, writing back atomically.
+func cleanOrphanEntries(claudeJSONPath string) error {
+	data, err := os.ReadFile(claudeJSONPath)
+	if err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	projectsRaw, ok := raw["projects"]
+	if !ok {
+		return nil
+	}
+	var projects map[string]json.RawMessage
+	if err := json.Unmarshal(projectsRaw, &projects); err != nil {
+		return err
+	}
+	changed := false
+	for path := range projects {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			delete(projects, path)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	newProjects, err := json.Marshal(projects)
+	if err != nil {
+		return err
+	}
+	raw["projects"] = newProjects
+	newData, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmpPath := claudeJSONPath + ".tmp"
+	if err := os.WriteFile(tmpPath, newData, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, claudeJSONPath)
+}
+
+// trimHistory keeps only the last keepLines lines of histPath, writing atomically.
+func trimHistory(histPath string, keepLines int) error {
+	data, err := os.ReadFile(histPath)
+	if err != nil {
+		return err
+	}
+	content := strings.TrimRight(string(data), "\n")
+	lines := strings.Split(content, "\n")
+	if len(lines) <= keepLines {
+		return nil
+	}
+	kept := lines[len(lines)-keepLines:]
+	newContent := strings.Join(kept, "\n") + "\n"
+	tmpPath := histPath + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(newContent), 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, histPath)
+}
+
 func formatSize(b int64) string {
 	const (
 		gb = 1 << 30
