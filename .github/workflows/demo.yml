@@ -74,6 +74,7 @@ jobs:
           vhs demo/full.tape
           vhs demo/cancel.tape
           vhs demo/update.tape
+          vhs demo/screenshot.tape
 
       # On PRs: upload as artifact for preview — cannot commit to fork branches
       - name: Upload GIFs as artifact (PR preview)
@@ -82,7 +83,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: demo-gifs
-          path: demo/*.gif
+          path: |
+            demo/*.gif
+            demo/*.png
           retention-days: 7
 
       - name: Publish GIFs for inline PR preview
@@ -202,4 +205,4 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: update demo GIFs [skip ci]"
-          file_pattern: demo/*.gif
+          file_pattern: demo/*.gif demo/*.png
