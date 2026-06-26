@@ -2,7 +2,6 @@ Output demo/cancel.gif
 
 Set Theme "Dracula"
 Set FontSize 16
-Set Width 140
 Set Framerate 12
 Set Margin 0
 Set PlaybackSpeed 1
